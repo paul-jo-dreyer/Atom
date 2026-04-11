@@ -1,0 +1,10 @@
+# Android / Gradle
+build/
+.gradle/
+local.properties
+
+# APKs
+*.apk
+
+# Native libs
+*.so
