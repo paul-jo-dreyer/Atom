@@ -66,12 +66,17 @@ class AprilTagDetector {
         )
 
         // 3D axis points: origin, X-tip, Y-tip, Z-tip
-        val axisLength = tagSize * 0.75
+        val axisLength = tagSize * 0.5
         val axisPoints3d = MatOfPoint3f(
             Point3(0.0, 0.0, 0.0),
             Point3(axisLength, 0.0, 0.0),
             Point3(0.0, axisLength, 0.0),
             Point3(0.0, 0.0, axisLength) // Z points out of the tag
+        )
+
+        // Bottom edge center of the tag (for label placement)
+        val bottomCenter3d = MatOfPoint3f(
+            Point3(0.0, -half, 0.0)
         )
 
         val results = mutableListOf<DetectionResult>()
@@ -101,11 +106,15 @@ class AprilTagDetector {
                 val pose = TagPose(tagId, transform)
 
                 var axisProjected: Array<FloatArray>? = null
+                var bottomProjected: FloatArray? = null
                 if (projectAxes) {
                     axisProjected = projectAxisPoints(rvec, tvec, axisPoints3d)
                 }
+                // Always project bottom center for label placement
+                val bottomPts = projectAxisPoints(rvec, tvec, bottomCenter3d)
+                bottomProjected = bottomPts[0]
 
-                results.add(DetectionResult(pose, axisProjected))
+                results.add(DetectionResult(pose, axisProjected, bottomProjected))
             }
 
             rvec.release()
@@ -118,6 +127,7 @@ class AprilTagDetector {
         rejected.forEach { it.release() }
         objPoints.release()
         axisPoints3d.release()
+        bottomCenter3d.release()
 
         return results
     }
@@ -129,7 +139,7 @@ class AprilTagDetector {
         val pts = projected.toArray()
         projected.release()
 
-        return Array(4) { i ->
+        return Array(pts.size) { i ->
             floatArrayOf(pts[i].x.toFloat(), pts[i].y.toFloat())
         }
     }

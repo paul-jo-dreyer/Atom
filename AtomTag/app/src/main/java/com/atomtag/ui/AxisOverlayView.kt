@@ -8,16 +8,22 @@ import android.util.AttributeSet
 import android.view.View
 
 /**
- * Transparent overlay that draws coordinate frame axes on detected AprilTags.
+ * Transparent overlay that draws coordinate frame axes and tag index labels.
  * X = red, Y = green, Z = blue.
+ * Each tag index gets a unique bright saturated color.
  */
 class AxisOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
-    // Each entry: [origin, x-tip, y-tip, z-tip] as FloatArray(2) each
-    private var axisData: List<Array<FloatArray>> = emptyList()
+    data class TagOverlayData(
+        val tagId: Int,
+        val axisPoints: Array<FloatArray>?,
+        val bottomCenter: FloatArray?
+    )
+
+    private var tagData: List<TagOverlayData> = emptyList()
     private var imageWidth = 1
     private var imageHeight = 1
     private var rotationDegrees = 0
@@ -34,9 +40,15 @@ class AxisOverlayView @JvmOverloads constructor(
     private val paintOrigin = Paint().apply {
         color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true
     }
+    private val labelPaint = Paint().apply {
+        textSize = 48f; isFakeBoldText = true; isAntiAlias = true; textAlign = Paint.Align.CENTER
+    }
+    private val labelBgPaint = Paint().apply {
+        color = Color.argb(160, 0, 0, 0); style = Paint.Style.FILL; isAntiAlias = true
+    }
 
-    fun updateAxes(axes: List<Array<FloatArray>>, imgWidth: Int, imgHeight: Int, rotation: Int) {
-        axisData = axes
+    fun update(data: List<TagOverlayData>, imgWidth: Int, imgHeight: Int, rotation: Int) {
+        tagData = data
         imageWidth = imgWidth
         imageHeight = imgHeight
         rotationDegrees = rotation
@@ -44,38 +56,64 @@ class AxisOverlayView @JvmOverloads constructor(
     }
 
     fun clear() {
-        axisData = emptyList()
+        tagData = emptyList()
         postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (axisData.isEmpty()) return
+        if (tagData.isEmpty()) return
 
-        for (axis in axisData) {
-            val origin = mapPoint(axis[0])
-            val xTip = mapPoint(axis[1])
-            val yTip = mapPoint(axis[2])
-            val zTip = mapPoint(axis[3])
+        for (tag in tagData) {
+            // Draw axes if available
+            if (tag.axisPoints != null) {
+                val origin = mapPoint(tag.axisPoints[0])
+                val xTip = mapPoint(tag.axisPoints[1])
+                val yTip = mapPoint(tag.axisPoints[2])
+                val zTip = mapPoint(tag.axisPoints[3])
 
-            canvas.drawLine(origin[0], origin[1], xTip[0], xTip[1], paintX)
-            canvas.drawLine(origin[0], origin[1], yTip[0], yTip[1], paintY)
-            canvas.drawLine(origin[0], origin[1], zTip[0], zTip[1], paintZ)
-            canvas.drawCircle(origin[0], origin[1], 8f, paintOrigin)
+                canvas.drawLine(origin[0], origin[1], xTip[0], xTip[1], paintX)
+                canvas.drawLine(origin[0], origin[1], yTip[0], yTip[1], paintY)
+                canvas.drawLine(origin[0], origin[1], zTip[0], zTip[1], paintZ)
+                canvas.drawCircle(origin[0], origin[1], 8f, paintOrigin)
+            }
+
+            // Always draw tag index label at bottom edge
+            if (tag.bottomCenter != null) {
+                val labelPos = mapPoint(tag.bottomCenter)
+                val tagColor = colorForIndex(tag.tagId)
+                labelPaint.color = tagColor
+
+                val label = "${tag.tagId}"
+                val textWidth = labelPaint.measureText(label)
+                val padding = 8f
+                val x = labelPos[0]
+                val y = labelPos[1] + labelPaint.textSize + 4f
+
+                // Background pill
+                canvas.drawRoundRect(
+                    x - textWidth / 2 - padding,
+                    y - labelPaint.textSize,
+                    x + textWidth / 2 + padding,
+                    y + padding,
+                    12f, 12f,
+                    labelBgPaint
+                )
+
+                // Color indicator dot
+                val dotPaint = Paint().apply { color = tagColor; style = Paint.Style.FILL; isAntiAlias = true }
+                canvas.drawCircle(x - textWidth / 2 - padding - 12f, y - labelPaint.textSize / 2 + padding / 2, 8f, dotPaint)
+
+                // Label text
+                canvas.drawText(label, x, y, labelPaint)
+            }
         }
     }
 
-    /**
-     * Map image coordinates to view coordinates, matching PreviewView's FILL_CENTER behavior.
-     *
-     * 1. Rotate image coords by rotationDegrees to get display-oriented coords
-     * 2. Scale to fill the view (same as FILL_CENTER — scale to cover, then center)
-     */
     private fun mapPoint(pt: FloatArray): FloatArray {
         val imgX = pt[0]
         val imgY = pt[1]
 
-        // Step 1: Rotate image point to display orientation
         val rotatedX: Float
         val rotatedY: Float
         val rotatedW: Int
@@ -100,7 +138,7 @@ class AxisOverlayView @JvmOverloads constructor(
                 rotatedW = imageHeight
                 rotatedH = imageWidth
             }
-            else -> { // 0
+            else -> {
                 rotatedX = imgX
                 rotatedY = imgY
                 rotatedW = imageWidth
@@ -108,7 +146,6 @@ class AxisOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Step 2: FILL_CENTER scaling — scale to cover the view, then center-crop
         val viewW = width.toFloat()
         val viewH = height.toFloat()
         val scale = maxOf(viewW / rotatedW, viewH / rotatedH)
@@ -122,5 +159,17 @@ class AxisOverlayView @JvmOverloads constructor(
         val vy = rotatedY * scale + offsetY
 
         return floatArrayOf(vx, vy)
+    }
+
+    companion object {
+        /**
+         * Generate a bright, fully saturated color for a given tag index.
+         * Uses evenly spaced hues around the color wheel.
+         */
+        fun colorForIndex(index: Int): Int {
+            // Golden angle spacing gives good perceptual separation
+            val hue = (index * 137.508f) % 360f
+            return Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
+        }
     }
 }

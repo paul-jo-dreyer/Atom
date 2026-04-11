@@ -141,10 +141,14 @@ class CameraFragment : Fragment() {
                     broadcaster.broadcast(poseVector)
                 }
 
-                // Collect axis data for overlay
-                val axisData = if (shouldDrawAxes) {
-                    detections.mapNotNull { it.axisPoints }
-                } else emptyList()
+                // Build overlay data — labels always shown, axes only when toggled
+                val overlayData = detections.map { det ->
+                    AxisOverlayView.TagOverlayData(
+                        tagId = det.pose.tagId,
+                        axisPoints = if (shouldDrawAxes) det.axisPoints else null,
+                        bottomCenter = det.bottomCenter
+                    )
+                }
 
                 val imgW = gray.cols()
                 val imgH = gray.rows()
@@ -160,9 +164,9 @@ class CameraFragment : Fragment() {
                     else "Tags: ${tagIds.joinToString(", ")}\n$poseInfo"
                     updateFps()
 
-                    if (shouldDrawAxes && axisData.isNotEmpty()) {
-                        axisOverlay.updateAxes(axisData, imgW, imgH, rotation)
-                    } else if (!shouldDrawAxes) {
+                    if (overlayData.isNotEmpty()) {
+                        axisOverlay.update(overlayData, imgW, imgH, rotation)
+                    } else {
                         axisOverlay.clear()
                     }
                 }

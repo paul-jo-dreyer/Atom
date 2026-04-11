@@ -1,10 +1,25 @@
-# Android / Gradle
-build/
+# --- Android / Gradle ---
 .gradle/
+**/.gradle/
+build/
+**/build/
 local.properties
 
-# APKs
+# --- APK / App bundles ---
 *.apk
+*.ap_
+*.aab
 
-# Native libs
+# --- Native / compiled ---
 *.so
+
+# --- NDK / CMake ---
+.cxx/
+
+# --- IDE (optional but recommended) ---
+.idea/
+*.iml
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
