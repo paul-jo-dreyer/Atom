@@ -127,8 +127,9 @@ class CameraFragment : Fragment() {
                 val shouldDrawAxes = drawAxes
                 detector.initIntrinsics(gray.cols(), gray.rows())
                 val detections = detector.detect(gray, projectAxes = shouldDrawAxes)
-                val poses = detections.map { it.pose }
-                val transformed = PoseTransformer.transformToOriginFrame(poses)
+                val rawPoses = detections.map { it.pose }
+                val transformed = PoseTransformer.transformToOriginFrame(rawPoses)
+                val originVisible = rawPoses.any { it.tagId == TagConfig.ORIGIN_TAG_ID }
 
                 for (pose in transformed) {
                     poseVector.update(pose)
@@ -153,15 +154,16 @@ class CameraFragment : Fragment() {
                 val imgW = gray.cols()
                 val imgH = gray.rows()
 
-                // Update UI
-                val tagIds = poses.map { it.tagId }
-                val poseInfo = poses.joinToString("\n") { p ->
+                // Show transformed poses (origin-frame when tag 0 visible, camera-frame otherwise)
+                val frameLabel = if (originVisible) "ref: tag ${TagConfig.ORIGIN_TAG_ID}" else "ref: camera"
+                val tagIds = transformed.map { it.tagId }
+                val poseInfo = transformed.joinToString("\n") { p ->
                     "  Tag ${p.tagId}: (${String.format("%.3f", p.tx)}, ${String.format("%.3f", p.ty)}, ${String.format("%.3f", p.tz)})"
                 }
 
                 requireActivity().runOnUiThread {
                     detectionText.text = if (tagIds.isEmpty()) "Tags: none"
-                    else "Tags: ${tagIds.joinToString(", ")}\n$poseInfo"
+                    else "[$frameLabel]\nTags: ${tagIds.joinToString(", ")}\n$poseInfo"
                     updateFps()
 
                     if (overlayData.isNotEmpty()) {

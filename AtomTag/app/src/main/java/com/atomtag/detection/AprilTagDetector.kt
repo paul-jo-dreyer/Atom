@@ -37,8 +37,7 @@ class AprilTagDetector {
     }
 
     /**
-     * Detect AprilTags and estimate poses.
-     * @param projectAxes If true, also projects 3D axis endpoints to 2D for visualization.
+     * Detect AprilTags and estimate poses using per-tag sizes from config.
      */
     fun detect(grayFrame: Mat, projectAxes: Boolean = false): List<DetectionResult> {
         if (!intrinsicsInitialized) return emptyList()
@@ -55,35 +54,21 @@ class AprilTagDetector {
             return emptyList()
         }
 
-        val tagSize = TagConfig.TAG_SIZE_METERS
-        val half = tagSize / 2.0
-
-        val objPoints = MatOfPoint3f(
-            Point3(-half, half, 0.0),
-            Point3(half, half, 0.0),
-            Point3(half, -half, 0.0),
-            Point3(-half, -half, 0.0)
-        )
-
-        // 3D axis points: origin, X-tip, Y-tip, Z-tip
-        val axisLength = tagSize * 0.5
-        val axisPoints3d = MatOfPoint3f(
-            Point3(0.0, 0.0, 0.0),
-            Point3(axisLength, 0.0, 0.0),
-            Point3(0.0, axisLength, 0.0),
-            Point3(0.0, 0.0, axisLength) // Z points out of the tag
-        )
-
-        // Bottom edge center of the tag (for label placement)
-        val bottomCenter3d = MatOfPoint3f(
-            Point3(0.0, -half, 0.0)
-        )
-
         val results = mutableListOf<DetectionResult>()
 
         for (i in 0 until ids.rows()) {
             val tagId = ids.get(i, 0)[0].toInt()
-            if (tagId < 0 || tagId >= TagConfig.NUM_TAGS) continue
+            if (!TagConfig.isTracked(tagId)) continue
+
+            val tagSize = TagConfig.getTagSize(tagId)
+            val half = tagSize / 2.0
+
+            val objPoints = MatOfPoint3f(
+                Point3(-half, half, 0.0),
+                Point3(half, half, 0.0),
+                Point3(half, -half, 0.0),
+                Point3(-half, -half, 0.0)
+            )
 
             val cornerMat = corners[i]
             val points = Array(4) { idx ->
@@ -106,13 +91,21 @@ class AprilTagDetector {
                 val pose = TagPose(tagId, transform)
 
                 var axisProjected: Array<FloatArray>? = null
-                var bottomProjected: FloatArray? = null
                 if (projectAxes) {
-                    axisProjected = projectAxisPoints(rvec, tvec, axisPoints3d)
+                    val axisLength = tagSize * 0.5
+                    val axisPoints3d = MatOfPoint3f(
+                        Point3(0.0, 0.0, 0.0),
+                        Point3(axisLength, 0.0, 0.0),
+                        Point3(0.0, axisLength, 0.0),
+                        Point3(0.0, 0.0, axisLength)
+                    )
+                    axisProjected = projectPoints(rvec, tvec, axisPoints3d)
+                    axisPoints3d.release()
                 }
-                // Always project bottom center for label placement
-                val bottomPts = projectAxisPoints(rvec, tvec, bottomCenter3d)
-                bottomProjected = bottomPts[0]
+
+                val bottomCenter3d = MatOfPoint3f(Point3(0.0, -half, 0.0))
+                val bottomProjected = projectPoints(rvec, tvec, bottomCenter3d)[0]
+                bottomCenter3d.release()
 
                 results.add(DetectionResult(pose, axisProjected, bottomProjected))
             }
@@ -120,21 +113,19 @@ class AprilTagDetector {
             rvec.release()
             tvec.release()
             imagePoints.release()
+            objPoints.release()
         }
 
         ids.release()
         corners.forEach { it.release() }
         rejected.forEach { it.release() }
-        objPoints.release()
-        axisPoints3d.release()
-        bottomCenter3d.release()
 
         return results
     }
 
-    private fun projectAxisPoints(rvec: Mat, tvec: Mat, axisPoints3d: MatOfPoint3f): Array<FloatArray> {
+    private fun projectPoints(rvec: Mat, tvec: Mat, points3d: MatOfPoint3f): Array<FloatArray> {
         val projected = MatOfPoint2f()
-        Calib3d.projectPoints(axisPoints3d, rvec, tvec, cameraMatrix, distCoeffs, projected)
+        Calib3d.projectPoints(points3d, rvec, tvec, cameraMatrix, distCoeffs, projected)
 
         val pts = projected.toArray()
         projected.release()

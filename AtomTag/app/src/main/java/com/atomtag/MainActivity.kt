@@ -5,6 +5,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
+import com.atomtag.model.TagConfig
 import com.atomtag.ui.CameraFragment
 import com.atomtag.ui.DevicesFragment
 import com.google.android.material.tabs.TabLayout
@@ -16,6 +17,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        TagConfig.load(this)
+
         setContentView(R.layout.activity_main)
 
         val viewPager = findViewById<ViewPager2>(R.id.viewPager)

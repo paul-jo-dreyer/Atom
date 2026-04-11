@@ -1,0 +1,18 @@
+{
+  "origin_tag_id": 0,
+  "multicast_group": "239.1.1.1",
+  "multicast_port": 5000,
+  "broadcast_interval_ms": 50,
+  "tags": [
+    {
+      "id": 0,
+      "size_meters": 0.05,
+      "label": "origin"
+    },
+    {
+      "id": 1,
+      "size_meters": 0.05,
+      "label": "tag1"
+    }
+  ]
+}
