@@ -6,13 +6,38 @@
   "tags": [
     {
       "id": 0,
-      "size_meters": 0.05,
+      "size_meters": 0.06,
       "label": "origin"
     },
     {
       "id": 1,
-      "size_meters": 0.05,
+      "size_meters": 0.06,
       "label": "tag1"
+    },
+    {
+      "id": 2,
+      "size_meters": 0.06,
+      "label": "tag2"
+    },
+    {
+      "id": 3,
+      "size_meters": 0.06,
+      "label": "tag3"
+    },
+    {
+      "id": 4,
+      "size_meters": 0.06,
+      "label": "tag4"
+    },
+    {
+      "id": 5,
+      "size_meters": 0.06,
+      "label": "tag5"
+    },
+    {
+      "id": 6,
+      "size_meters": 0.06,
+      "label": "tag6"
     }
   ]
 }
