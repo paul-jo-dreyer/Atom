@@ -1,0 +1,9 @@
+Manufacturer=Hirose
+PartNumber=DF40HC(4.0)-40DS-0.4V(70)
+PartCategory=Connector
+PackageCategory=Other
+PinCount=40
+Version=1.4
+Released=2019-01-15 18:20:38
+Downloaded=2026-04-15 07:28:26
+3D=Y

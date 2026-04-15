@@ -1,0 +1,13 @@
+(unit MM)
+
+(package "DF40HC_4_0_-40DS-0_4V_70_"
+    (type UNDEF)
+    (uver 2)
+    (cuser "SamacSys")
+    (uuser "SamacSys")
+    (utime 2019-01-15-18:20:38)
+    (mountForm default
+        (footprintRef "DF40HC4040DS04V70")
+        (spec "System")
+    )
+)

@@ -1,0 +1,11 @@
+FILE_TYPE = MULTI_PHYS_TABLE;
+
+PART 'DF40HC_4.0__40DS_0.4V_70_'
+CLASS = IO
+{========================================================================================}
+:"MANUFACTURER_NAME", "MANUFACTURER_PART_NUMBER"= "PART_NUMBER", "JEDEC_TYPE", "PACK_TYPE", "MOUSER_PART_NUMBER", "MOUSER_PRICE/STOCK", "DESCRIPTION", "DATASHEET", "HEIGHT";
+{========================================================================================}
+ "Hirose", "DF40HC(4.0)-40DS-0.4V(70)" (!) = "", "DF40HC4040DS04V70", "Other", "798-DF4HC4040DS04V70", "https://www.mouser.co.uk/ProductDetail/Hirose-Connector/DF40HC4.0-40DS-0.4V70?qs=tTj%252BmQ3KZwaQlTwElzYEIw%3D%3D", "Board to Board & Mezzanine Connectors 40P 2 ROW RECEPTACLE 4MM HGHT .4MM PITCH", "https://datasheet.datasheetarchive.com/originals/distributors/SFDatasheet-7/sf-000141247.pdf", "4.05 mm"
+END_PART
+
+END.
