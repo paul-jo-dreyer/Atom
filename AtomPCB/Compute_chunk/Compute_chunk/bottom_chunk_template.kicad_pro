@@ -451,7 +451,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "top_chunk_template.kicad_pro",
+    "filename": "bottom_chunk_template.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -609,11 +609,6 @@
     "subpart_first_id": 65,
     "subpart_id_separator": 0
   },
-  "sheets": [
-    [
-      "c0a8178f-9d8a-43b3-a268-9a78189dc586",
-      "Root"
-    ]
-  ],
+  "sheets": [],
   "text_variables": {}
 }
