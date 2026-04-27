@@ -135,7 +135,8 @@ TEST_CASE("Robot (kinematic) honors set_state") {
     CHECK(robot.state()[diff_drive::PY]    == doctest::Approx(-0.05f));
     CHECK(robot.state()[diff_drive::THETA] == doctest::Approx(1.0f));
 
+    // Box2D's pose is in scaled units (user metres × kBox2dScale).
     const b2Transform xf = b2Body_GetTransform(robot.body_id());
-    CHECK(xf.p.x == doctest::Approx(0.1f));
-    CHECK(xf.p.y == doctest::Approx(-0.05f));
+    CHECK(xf.p.x == doctest::Approx(0.1f * sim::kBox2dScale));
+    CHECK(xf.p.y == doctest::Approx(-0.05f * sim::kBox2dScale));
 }

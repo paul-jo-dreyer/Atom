@@ -8,6 +8,8 @@
 #include <box2d/box2d.h>
 
 #include <array>
+#include <cstdint>
+#include <set>
 #include <vector>
 
 namespace sim {
@@ -66,6 +68,13 @@ private:
     // the case where the ball is stationary and the robot is moving — we
     // Galilean-shift to the other's frame, apply the asymmetric impulse,
     // shift back.
+    //
+    // We re-queue impulses every frame the contact is in actual penetration
+    // (separation < 0). The impulse formula is self-limiting — it's a no-op
+    // when the ball is already moving away from the surface — so re-applying
+    // each frame doesn't over-energize. This is what handles sustained-push
+    // contacts: when damping decays the ball back below the pusher's speed,
+    // the next penetration frame produces a fresh impulse.
     struct PendingContact {
         std::array<float, 2> normal;
         std::array<float, 2> other_velocity;

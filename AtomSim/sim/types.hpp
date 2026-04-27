@@ -20,6 +20,19 @@ struct WorldConfig {
     int   substeps     = 4;        // Box2D 3.x TGS substep count per Step()
 };
 
+// Length-scaling factor between user-facing units (meters) and Box2D's
+// internal units. We multiply by this when crossing INTO Box2D, divide
+// when reading OUT.
+//
+// Why: Box2D 3.x is tuned for objects in the 0.1–10 m range and bakes a
+// 5 mm linear slop into hull computation, contact tolerance, and the
+// solver. Our manipulator polygons have features at 5–20 mm, so they get
+// silently welded into degeneracy and dropped. Scaling by 10× makes the
+// 5 mm-min user feature 50 mm in Box2D's view, comfortably above its 20 mm
+// vertex-welding threshold. The scale is purely a Box2D-side convention
+// — user inputs/outputs and `core/` stay in meters.
+constexpr float kBox2dScale = 10.0f;
+
 // Box2D contact-filter category bits. Each kind of body is one bit; mask bits
 // say which categories a body collides with. The user-requested rule "ball
 // does not collide with walls" is encoded here: WALL.mask excludes BALL,

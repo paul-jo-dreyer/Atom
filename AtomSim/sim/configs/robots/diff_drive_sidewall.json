@@ -1,0 +1,5 @@
+{
+  "name": "diff_drive_sidewall",
+  "chassis_side": 0.060,
+  "manipulator": "sidewall_pusher"
+}

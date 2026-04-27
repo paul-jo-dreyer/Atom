@@ -62,6 +62,132 @@ TEST_CASE("Ball: field pull-back keeps ball from leaving the field") {
     CHECK(std::abs(ball.state()[::ball::PX]) < world.config().field_x_half);   // settled back inside
 }
 
+TEST_CASE("Ball: multi-part manipulator — each part can register a contact") {
+    // The robot has a 3-part manipulator: a central bar at x=[0.030, 0.035],
+    // y=[-0.030, 0.030], plus two triangular wings at the corners. A ball at
+    // y=0 only touches the central bar; a ball at y=0.024 enters the top wing.
+    // This test confirms the wing IS picked up (i.e., not just the first
+    // shape) when the geometry actually engages.
+    sim::RobotConfig robot_cfg;
+    robot_cfg.body_type    = sim::BodyType::Kinematic;
+    robot_cfg.chassis_side = 0.060f;
+    robot_cfg.x0           = 0.0f;
+    robot_cfg.manipulator_parts = {
+        // central bar
+        {{0.030f, -0.030f}, {0.035f, -0.030f}, {0.035f, 0.030f}, {0.030f, 0.030f}},
+        // top wing (sloped from (0.035, 0.017) out to (0.055, 0.030))
+        {{0.035f, 0.017f}, {0.055f, 0.030f}, {0.035f, 0.030f}},
+        // bottom wing
+        {{0.035f, -0.017f}, {0.055f, -0.030f}, {0.035f, -0.030f}},
+    };
+
+    sim::BallConfig ball_cfg;
+    ball_cfg.dynamics_params.radius      = 0.014f;
+    ball_cfg.dynamics_params.restitution = 0.6f;
+    ball_cfg.dynamics_params.damping     = 0.0f;
+
+    SUBCASE("ball at y=0 hits central bar") {
+        sim::World world{};
+        sim::Robot robot(world, robot_cfg);
+        sim::Ball ball(world, ball_cfg);
+
+        ::ball::State<float> s;
+        s << 0.10f, 0.000f, -1.0f, 0.0f;   // moving in -x toward the manipulator
+        ball.set_state(s);
+
+        diff_drive::Control<float> u_zero;
+        u_zero << 0.0f, 0.0f;
+        const float dt = 0.005f;
+        for (int i = 0; i < 100; ++i) {
+            ball.pre_step(dt);
+            robot.pre_step(u_zero, dt);
+            world.step(dt);
+            ball.post_step();
+            robot.post_step();
+        }
+        // Ball should have bounced (vx now positive)
+        CHECK(ball.state()[::ball::VX] > 0.0f);
+    }
+
+    SUBCASE("ball at y=0.024 hits the top wing") {
+        sim::World world{};
+        sim::Robot robot(world, robot_cfg);
+        sim::Ball ball(world, ball_cfg);
+
+        // Ball positioned where ONLY the top-wing geometry can reach it
+        // (chassis ends at y=0.030; ball center at y=0.024 + radius 0.014 →
+        // ball top edge at 0.038, but contact happens via the wing's sloped
+        // outer face).
+        ::ball::State<float> s;
+        s << 0.10f, 0.024f, -1.0f, 0.0f;
+        ball.set_state(s);
+
+        diff_drive::Control<float> u_zero;
+        u_zero << 0.0f, 0.0f;
+        const float dt = 0.005f;
+        for (int i = 0; i < 100; ++i) {
+            ball.pre_step(dt);
+            robot.pre_step(u_zero, dt);
+            world.step(dt);
+            ball.post_step();
+            robot.post_step();
+        }
+        // Ball should have bounced — proving the wing shape (part [1]) is
+        // physically active and registering contacts.
+        CHECK(ball.state()[::ball::VX] > 0.0f);
+    }
+}
+
+TEST_CASE("Ball: sustained pushing — robot does not traverse through ball") {
+    // The traversal bug: with restitution < 1, repeated impulses dissipate
+    // energy until v_ball ≈ v_robot. Without position correction, our
+    // integration would let the manipulator slowly overtake the ball and
+    // pass through. With position correction, the ball is held at the
+    // contact surface (or just outside) for as long as the push lasts.
+    sim::World world{};
+
+    sim::RobotConfig robot_cfg;
+    robot_cfg.body_type    = sim::BodyType::Dynamic;
+    robot_cfg.chassis_side = 0.06f;
+    robot_cfg.mass         = 0.3f;
+    robot_cfg.yaw_inertia  = 5.0e-4f;
+    robot_cfg.x0           = -0.10f;
+    robot_cfg.dynamics_params.track_width = 0.10f;
+    robot_cfg.dynamics_params.tau_motor   = 0.05f;
+    sim::Robot robot(world, robot_cfg);
+
+    sim::BallConfig ball_cfg;
+    ball_cfg.x0 = 0.0f;
+    ball_cfg.y0 = 0.0f;
+    ball_cfg.dynamics_params.radius      = 0.020f;
+    ball_cfg.dynamics_params.restitution = 0.4f;
+    ball_cfg.dynamics_params.damping     = 0.8f;
+    sim::Ball ball(world, ball_cfg);
+
+    diff_drive::Control<float> u_drive;
+    u_drive << 0.3f, 0.3f;
+    const float dt = 1.0f / 60.0f;
+    for (int i = 0; i < 240; ++i) {     // 4 s of sustained push
+        ball.pre_step(dt);
+        robot.pre_step(u_drive, dt);
+        world.step(dt);
+        ball.post_step();
+        robot.post_step();
+    }
+
+    // Ball center must always remain on the +x side of the robot's chassis
+    // right edge. With chassis_side = 0.06, robot at some final x_r, the
+    // chassis right edge is at x_r + 0.030. Ball center must be > x_r +
+    // 0.030 (and ideally > x_r + 0.030 + 0.020 = x_r + 0.050 for non-
+    // penetration with the 20mm-radius ball).
+    const auto rs = robot.state();
+    const auto bs = ball.state();
+    const float chassis_right = rs[diff_drive::PX] + 0.5f * robot_cfg.chassis_side;
+    CHECK_MESSAGE(bs[::ball::PX] > chassis_right,
+                  "ball was traversed by the robot (px_ball=", bs[::ball::PX],
+                  " vs chassis_right=", chassis_right, ")");
+}
+
 TEST_CASE("Ball: contact with kinematic robot reverses the normal velocity") {
     sim::World world{};
     sim::BallConfig ball_cfg;

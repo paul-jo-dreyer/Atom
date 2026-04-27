@@ -3,6 +3,8 @@
 #include "ball/core/contact.hpp"
 #include "ball/core/integrators.hpp"
 
+#include <limits>
+
 namespace sim {
 
 namespace {
@@ -28,21 +30,21 @@ Ball::Ball(World& world, const BallConfig& cfg) : world_(&world), cfg_(cfg) {
     // to zero so Box2D's integration agrees with us between overrides.
     b2BodyDef body_def = b2DefaultBodyDef();
     body_def.type           = b2_dynamicBody;
-    body_def.position       = {cfg_.x0, cfg_.y0};
+    body_def.position       = {cfg_.x0 * kBox2dScale, cfg_.y0 * kBox2dScale};
     body_def.linearDamping  = 0.0f;
     body_def.gravityScale   = 0.0f;
     body_id_ = b2CreateBody(world.world_id(), &body_def);
 
     b2Circle circle;
     circle.center = {0.0f, 0.0f};
-    circle.radius = cfg_.dynamics_params.radius;
+    circle.radius = cfg_.dynamics_params.radius * kBox2dScale;
 
     b2ShapeDef shape_def = b2DefaultShapeDef();
     shape_def.filter.categoryBits = CATEGORY_BALL;
     shape_def.filter.maskBits     = MASK_BALL;
     shape_def.density             = 0.0f;
     shape_def.updateBodyMass      = false;
-    shape_def.enableContactEvents = true;   // we listen for these in post_step
+    shape_def.enableContactEvents = true;   // (no longer used; we poll instead)
     shape_id_ = b2CreateCircleShape(body_id_, &shape_def, &circle);
 
     // Set mass explicitly. Required because a zero-mass dynamic body is
@@ -66,8 +68,9 @@ void Ball::pre_step(float dt) {
     // 1. Apply pending contact impulses from previous frame. For each
     //    contact, Galilean-shift to the other body's frame, apply the
     //    asymmetric impulse (which assumes the other is immovable), then
-    //    shift back. This lets us handle ball-into-robot AND robot-into-
-    //    ball uniformly.
+    //    shift back. This handles ball-into-robot AND robot-into-ball
+    //    uniformly. All velocities here are in user (m/s); the Box2D-side
+    //    scaling happens at the SetLinearVelocity call below.
     for (const auto& pc : pending_contacts_) {
         ::ball::State<float> shifted = state_;
         shifted[::ball::VX] -= pc.other_velocity[0];
@@ -83,10 +86,47 @@ void Ball::pre_step(float dt) {
     }
     pending_contacts_.clear();
 
+    // 1b. Position correction: push the ball out of any penetration with
+    //     other bodies, using the contact data Box2D produced last step.
+    //     Without this, sustained contact causes traversal — the impulse
+    //     formula loses energy (restitution < 1), so ball velocity decays
+    //     toward the pusher's velocity, and our integration alone cannot
+    //     guarantee non-penetration. Separation comes from Box2D in scaled
+    //     units; we divide by kBox2dScale to push state in user metres.
+    {
+        const int capacity = b2Body_GetContactCapacity(body_id_);
+        if (capacity > 0) {
+            std::vector<b2ContactData> contacts(static_cast<std::size_t>(capacity));
+            const int n = b2Body_GetContactData(body_id_, contacts.data(), capacity);
+            for (int i = 0; i < n; ++i) {
+                const b2ContactData& cd = contacts[static_cast<std::size_t>(i)];
+                float min_sep = std::numeric_limits<float>::max();
+                for (int j = 0; j < cd.manifold.pointCount; ++j) {
+                    const float s = cd.manifold.points[j].separation;
+                    if (s < min_sep) {
+                        min_sep = s;
+                    }
+                }
+                if (min_sep >= 0.0f) {
+                    continue;  // speculative-only, no actual penetration
+                }
+                const b2BodyId body_a   = b2Shape_GetBody(cd.shapeIdA);
+                const bool     ball_is_a = body_id_equals(body_a, body_id_);
+                b2Vec2 n = cd.manifold.normal;
+                if (ball_is_a) {
+                    n.x = -n.x;
+                    n.y = -n.y;
+                }
+                const float depth_user = (-min_sep) / kBox2dScale;
+                state_[::ball::PX] += depth_user * n.x;
+                state_[::ball::PY] += depth_user * n.y;
+            }
+        }
+    }
+
     // 2. Soft field-centering force outside the bounds. Linear restoring
     //    acceleration: a = -k * penetration along the violated axis. Applied
-    //    as a discrete Euler velocity kick, which is fine since the field
-    //    force is zero whenever the ball is in bounds (the common case).
+    //    as a discrete Euler velocity kick in user units (m/s, m).
     const float xh = world_->config().field_x_half;
     const float yh = world_->config().field_y_half;
     float ax = 0.0f, ay = 0.0f;
@@ -97,51 +137,86 @@ void Ball::pre_step(float dt) {
     state_[::ball::VX] += ax * dt;
     state_[::ball::VY] += ay * dt;
 
-    // 3. Integrate the linear-damping ODE via the closed-form step.
+    // 3. Integrate the linear-damping ODE via the closed-form step (user units).
     state_ = ::ball::exact_step(cfg_.dynamics_params, state_, dt);
 
-    // 4. Push the new pose AND velocity to Box2D so collision detection sees
-    //    a self-consistent state. Velocity matters here because Box2D uses
-    //    it to expand swept AABBs in broad phase — without it, fast-moving
-    //    balls might have contacts missed.
+    // 4. Push pose AND velocity to Box2D, both scaled. Velocity matters for
+    //    Box2D's broad-phase swept AABB expansion.
     b2Body_SetTransform(body_id_,
-                        {state_[::ball::PX], state_[::ball::PY]},
+                        {state_[::ball::PX] * kBox2dScale,
+                         state_[::ball::PY] * kBox2dScale},
                         b2MakeRot(0.0f));
-    b2Body_SetLinearVelocity(body_id_, {state_[::ball::VX], state_[::ball::VY]});
+    b2Body_SetLinearVelocity(body_id_,
+                             {state_[::ball::VX] * kBox2dScale,
+                              state_[::ball::VY] * kBox2dScale});
 }
 
 void Ball::post_step() {
     pending_contacts_.clear();
 
-    b2ContactEvents events = b2World_GetContactEvents(world_->world_id());
-    for (int i = 0; i < events.beginCount; ++i) {
-        const b2ContactBeginTouchEvent& e = events.beginEvents[i];
-        const b2BodyId body_a = b2Shape_GetBody(e.shapeIdA);
-        const b2BodyId body_b = b2Shape_GetBody(e.shapeIdB);
-        const bool ball_is_a = body_id_equals(body_a, body_id_);
-        const bool ball_is_b = body_id_equals(body_b, body_id_);
+    // Poll all current contacts on the ball body. Filter on manifold's
+    // `separation` to ignore Box2D's speculative-collision skin — only
+    // react to actual penetration.
+    //
+    // We queue an impulse on EVERY frame penetration is active. The impulse
+    // formula is self-limiting (no-op when v_rel · n ≥ 0), so re-applying
+    // each frame doesn't over-energize but DOES handle sustained-push as
+    // damping decays the ball's velocity back below the pusher's.
+    const int capacity = b2Body_GetContactCapacity(body_id_);
+    if (capacity == 0) {
+        return;
+    }
+    std::vector<b2ContactData> contacts(static_cast<std::size_t>(capacity));
+    const int n_contacts = b2Body_GetContactData(body_id_, contacts.data(), capacity);
+
+    for (int i = 0; i < n_contacts; ++i) {
+        const b2ContactData& cd = contacts[static_cast<std::size_t>(i)];
+
+        float min_sep = std::numeric_limits<float>::max();
+        for (int j = 0; j < cd.manifold.pointCount; ++j) {
+            const float s = cd.manifold.points[j].separation;
+            if (s < min_sep) {
+                min_sep = s;
+            }
+        }
+        if (min_sep >= 0.0f) {
+            continue;
+        }
+
+        const b2BodyId body_a   = b2Shape_GetBody(cd.shapeIdA);
+        const b2BodyId body_b   = b2Shape_GetBody(cd.shapeIdB);
+        const bool     ball_is_a = body_id_equals(body_a, body_id_);
+        const bool     ball_is_b = body_id_equals(body_b, body_id_);
         if (!ball_is_a && !ball_is_b) {
             continue;
         }
-        // Manifold normal points from shape A to shape B by Box2D convention.
-        // For the impulse formula we need the normal pointing INTO the ball.
-        b2Vec2 n = e.manifold.normal;
+
+        b2Vec2 n = cd.manifold.normal;
         if (ball_is_a) {
             n.x = -n.x;
             n.y = -n.y;
         }
         const b2BodyId other_body = ball_is_a ? body_b : body_a;
-        const b2Vec2   v_other    = b2Body_GetLinearVelocity(other_body);
-        pending_contacts_.push_back({{n.x, n.y}, {v_other.x, v_other.y}});
+        const b2Vec2   v_other_b  = b2Body_GetLinearVelocity(other_body);
+        // Convert other body's velocity to user units before storing — the
+        // Galilean shift in pre_step subtracts it from `state_` velocities,
+        // which are user-units.
+        pending_contacts_.push_back({
+            {n.x, n.y},
+            {v_other_b.x / kBox2dScale, v_other_b.y / kBox2dScale}
+        });
     }
 }
 
 void Ball::set_state(const ::ball::State<float>& s) {
     state_ = s;
     b2Body_SetTransform(body_id_,
-                        {state_[::ball::PX], state_[::ball::PY]},
+                        {state_[::ball::PX] * kBox2dScale,
+                         state_[::ball::PY] * kBox2dScale},
                         b2MakeRot(0.0f));
-    b2Body_SetLinearVelocity(body_id_, {state_[::ball::VX], state_[::ball::VY]});
+    b2Body_SetLinearVelocity(body_id_,
+                             {state_[::ball::VX] * kBox2dScale,
+                              state_[::ball::VY] * kBox2dScale});
 }
 
 }  // namespace sim

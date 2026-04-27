@@ -40,10 +40,10 @@ void World::step(float dt) {
 }
 
 void World::create_walls() {
-    const float xh = config_.field_x_half;
-    const float yh = config_.field_y_half;
+    const float xh = config_.field_x_half * kBox2dScale;
+    const float yh = config_.field_y_half * kBox2dScale;
 
-    // left, right, bottom, top
+    // left, right, bottom, top — coordinates scaled to Box2D's view.
     walls_[0] = create_wall_segment(world_id_, {-xh, -yh}, {-xh,  yh});
     walls_[1] = create_wall_segment(world_id_, { xh, -yh}, { xh,  yh});
     walls_[2] = create_wall_segment(world_id_, {-xh, -yh}, { xh, -yh});
