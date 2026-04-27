@@ -4,4 +4,4 @@ __pycache__/
 *.so
 *.pyd
 .ipynb_checkpoints/
-.cache/
+.cache/.venv/
