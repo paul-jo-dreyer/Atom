@@ -56,11 +56,10 @@ diff_drive/
 │   ├── CMakeLists.txt
 │   └── envs/                      # Pure Python: Gymnasium/PettingZoo wrappers per task
 ├── core/
-│   ├── include/diff_drive/
-│   │   ├── dynamics.hpp           # Templated DiffDriveDynamics<Scalar>
-│   │   ├── integrators.hpp        # RK4, Euler, templated on dynamics + scalar
-│   │   ├── linearize.hpp          # Analytic Jacobians ∂f/∂x, ∂f/∂u
-│   │   └── types.hpp              # State/Control aliases, Eigen fixed-size
+│   ├── dynamics.hpp               # Templated DiffDriveDynamics<Scalar>
+│   ├── integrators.hpp            # RK4, Euler, templated on dynamics + scalar
+│   ├── linearize.hpp              # Analytic Jacobians ∂f/∂x, ∂f/∂u
+│   ├── types.hpp                  # State/Control aliases, Eigen fixed-size
 │   ├── tests/                     # doctest unit tests, run on desktop only
 │   └── CMakeLists.txt
 └── embedded/
@@ -96,7 +95,16 @@ The motor lag is folded into the body velocities (5D state) rather than tracking
 
 ## Linearization
 
-Analytic Jacobians `A = ∂f/∂x` and `B = ∂f/∂u` live in `dynamics/diff_drive/core/include/diff_drive/linearize.hpp`. Allocation-free, ESP32-compatible.
+Analytic Jacobians `A = ∂f/∂x` and `B = ∂f/∂u` live in `dynamics/diff_drive/core/linearize.hpp`. Allocation-free, ESP32-compatible.
+
+### Include conventions
+
+Headers live directly in `dynamics/<vehicle>/core/`, not under a nested `include/<vehicle>/`. The `core/` CMake target exposes two INTERFACE include dirs — its own directory and its parent — so:
+
+- From `sim/`, `bindings/`, or any sibling target: `#include "diff_drive/core/dynamics.hpp"` (vehicle-qualified; multiple vehicles will share the same parent include path).
+- From inside `core/` or `core/tests/`: `#include "dynamics.hpp"` (unqualified, since they're in the same directory).
+
+In CMake: `target_include_directories(diff_drive_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../..)`. The first path is `core/` itself (for unprefixed includes); the second is `dynamics/` (so the `diff_drive/core/...` prefix resolves for consumers). No `/include` suffix anywhere — that nesting is gone.
 
 Verify them three ways:
 1. **Autodiff in C++**: instantiate `DiffDriveDynamics<AutoDiffScalar<...>>` and compare in unit tests.

@@ -1,0 +1,27 @@
+{
+    "cmake.sourceDirectory": "${workspaceFolder}/AtomSim",
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": false,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/AtomSim/build/debug",
+        "--background-index",
+        "--clang-tidy",
+        "--header-insertion=never"
+    ],
+    "files.associations": {
+        "*.hpp": "cpp",
+        "*.tpp": "cpp"
+    },
+    "files.exclude": {
+        "**/build": true,
+        "**/.venv": true,
+        "**/__pycache__": true
+    },
+    "search.exclude": {
+        "**/build": true,
+        "**/.venv": true,
+        "**/uv.lock": true
+    }
+}
