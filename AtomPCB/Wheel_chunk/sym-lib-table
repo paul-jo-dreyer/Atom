@@ -1,4 +1,0 @@
-(sym_lib_table
-  (version 0)
-  (lib (name "Wheel_chunk-eagle-import")(type "KiCad")(uri "${KIPRJMOD}/Wheel_chunk-eagle-import.kicad_sym")(options "")(descr ""))
-)

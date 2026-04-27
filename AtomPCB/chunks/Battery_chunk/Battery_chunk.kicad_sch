@@ -1,0 +1,98 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "b6d6e0fc-8415-4f90-9050-f62acbd79578")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 36.83 54.61)
+		(size 81.28 41.91)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "34be67dd-af85-45f3-a407-ea3091cd744f")
+		(property "Sheetname" "Battery_chunk_lower"
+			(at 36.83 53.8984 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Battery_chunk_lower.kicad_sch"
+			(at 36.83 97.1046 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Battery_chunk"
+				(path "/b6d6e0fc-8415-4f90-9050-f62acbd79578"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 130.81 54.61)
+		(size 80.01 41.91)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "39579163-b9a9-458a-bd8f-2d3a06a547f2")
+		(property "Sheetname" "Battery_chunk_upper"
+			(at 130.81 53.8984 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Battery_chunk_upper.kicad_sch"
+			(at 130.81 97.1046 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Battery_chunk"
+				(path "/b6d6e0fc-8415-4f90-9050-f62acbd79578"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)
