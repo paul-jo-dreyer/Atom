@@ -18,6 +18,9 @@ analysis = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
 ]
+viz = [
+    "pygame>=2.6.0",
+]
 dev = [
     "nbstripout>=0.9.1",
     "pyright>=1.1.409",

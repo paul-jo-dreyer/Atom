@@ -27,7 +27,10 @@ State<Scalar> exact_step(const Params<Scalar>& params,
     using std::exp;
     const Scalar k     = params.damping;
     const Scalar decay = exp(-k * dt);
-    const Scalar disp  = (Scalar(1) - decay) / k;
+    // disp = (1 - exp(-k*dt))/k has a removable singularity at k=0; the
+    // limit is dt. Guard against k == 0 (also cheap-correct for k near 0
+    // since `decay` is then ≈ 1 and 1 - decay underflows to 0 cleanly).
+    const Scalar disp  = (k == Scalar(0)) ? dt : (Scalar(1) - decay) / k;
     State<Scalar> x_next;
     x_next[PX] = x[PX] + x[VX] * disp;
     x_next[PY] = x[PY] + x[VY] * disp;
