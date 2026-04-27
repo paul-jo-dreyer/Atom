@@ -16,35 +16,41 @@ The single biggest design pressure: one C++ dynamics core per vehicle type that 
 
 ```
 AtomSim/
-├── dynamics/                      # One folder per vehicle type
+├── vehicle_dynamics/              # One folder per actuated vehicle type
 │   └── diff_drive/
 │       ├── analysis/              # LaTeX derivations, Julia symbolic verification
 │       │   └── diff_drive.tex
 │       ├── bindings/              # pybind11 wrapper for this vehicle's core
 │       ├── core/                  # C++17 dynamics. ESP32-safe. No allocs, no exceptions.
 │       └── embedded/              # PlatformIO ESP32 project + MPC for this vehicle
-├── sim/                           # Shared physics: Box2D wrapper, walls, puck, sensors
+├── sim/                           # Shared physics: Box2D wrapper, walls, sensors
+│   └── objects/                   # Per-passive-object dynamics (ball, box, ...)
+│       └── ball/
+│           ├── analysis/
+│           ├── bindings/
+│           └── core/              # ESP32-safe rules apply here too
 ├── tests/                         # Cross-cutting integration tests
 └── training/                      # RL scripts: SB3 to start, CleanRL/RLlib if needed
 ```
 
-The grouping principle: anything specific to one vehicle type lives under `dynamics/<vehicle>/`. Anything shared across vehicles (the world, contact handling, sensor noise wrappers, training scripts) lives at the top level. Adding a second vehicle type (e.g. `dynamics/ackermann/`) should not require touching `sim/` or `training/`.
+The grouping principle: anything specific to one **vehicle** (an actuated body with its own controller, embedded target, and MPC) lives under `vehicle_dynamics/<vehicle>/`. Anything specific to a **passive object** the simulator pushes around (ball, puck, box) lives under `sim/objects/<object>/`. Anything genuinely shared across all vehicles and objects (Box2D world setup, sensor noise wrappers, training scripts) lives at the top level. Adding a second vehicle type (e.g. `vehicle_dynamics/ackermann/`) should not require touching `sim/` or `training/`; adding a second object type (e.g. `sim/objects/box/`) should not require touching any vehicle.
 
 ## Layering and what depends on what
 
-- `dynamics/<vehicle>/core/` depends on Eigen (header-only, fixed-size matrices). Nothing else.
-- `dynamics/<vehicle>/bindings/` depends on its sibling `core/` + pybind11.
-- `dynamics/<vehicle>/embedded/` depends on its sibling `core/` ONLY. If you find yourself wanting `sim/` here, stop.
-- `dynamics/<vehicle>/analysis/` is independent — LaTeX + Julia for derivations and symbolic Jacobian verification.
-- `sim/` depends on the `core/` of any vehicles it instantiates + Box2D 3.x.
+- `vehicle_dynamics/<vehicle>/core/` depends on Eigen (header-only, fixed-size matrices). Nothing else.
+- `vehicle_dynamics/<vehicle>/bindings/` depends on its sibling `core/` + pybind11.
+- `vehicle_dynamics/<vehicle>/embedded/` depends on its sibling `core/` ONLY. If you find yourself wanting `sim/` here, stop.
+- `vehicle_dynamics/<vehicle>/analysis/` is independent — LaTeX + Julia for derivations and symbolic Jacobian verification.
+- `sim/objects/<object>/core/` follows the same Eigen-only, ESP32-safe rules as vehicle cores. Same constraints, same layout, no `embedded/` (objects have no controller).
+- `sim/` (top level) depends on the `core/` of any vehicles AND objects it instantiates + Box2D 3.x.
 - `tests/` depends on whatever it's testing — primarily a cross-cutting integration layer.
-- `training/` is pure Python — depends on the built Python modules from `dynamics/*/bindings/` + Gymnasium, PettingZoo, SB3.
+- `training/` is pure Python — depends on the built Python modules from `vehicle_dynamics/*/bindings/` and `sim/objects/*/bindings/` + Gymnasium, PettingZoo, SB3.
 
-The hard rule: **`dynamics/<vehicle>/core/` never includes Box2D, never allocates on the heap in steady state, never throws, never uses RTTI.** Anything that violates those constraints lives in `sim/` or above. This is what makes the same code compile for ESP32.
+The hard rule: **any `core/` (vehicle or object) never includes Box2D, never allocates on the heap in steady state, never throws, never uses RTTI.** Anything that violates those constraints lives in `sim/` (top level) or above. This is what makes the same code compile for ESP32 — and why the rule extends to object cores too: even if no object's core ever runs on hardware, keeping the constraints uniform avoids per-directory exceptions.
 
 ## Per-vehicle internal structure
 
-Within each `dynamics/<vehicle>/`:
+Within each `vehicle_dynamics/<vehicle>/`:
 
 ```
 diff_drive/
@@ -95,21 +101,21 @@ The motor lag is folded into the body velocities (5D state) rather than tracking
 
 ## Linearization
 
-Analytic Jacobians `A = ∂f/∂x` and `B = ∂f/∂u` live in `dynamics/diff_drive/core/linearize.hpp`. Allocation-free, ESP32-compatible.
+Analytic Jacobians `A = ∂f/∂x` and `B = ∂f/∂u` live in `vehicle_dynamics/diff_drive/core/linearize.hpp`. Allocation-free, ESP32-compatible.
 
 ### Include conventions
 
-Headers live directly in `dynamics/<vehicle>/core/`, not under a nested `include/<vehicle>/`. The `core/` CMake target exposes two INTERFACE include dirs — its own directory and its parent — so:
+Headers live directly in `vehicle_dynamics/<vehicle>/core/` (or `sim/objects/<object>/core/`), not under a nested `include/<name>/`. Each `core/` CMake target exposes two INTERFACE include dirs — its own directory and its grandparent — so:
 
-- From `sim/`, `bindings/`, or any sibling target: `#include "diff_drive/core/dynamics.hpp"` (vehicle-qualified; multiple vehicles will share the same parent include path).
+- From `sim/`, `bindings/`, or any sibling target: `#include "diff_drive/core/dynamics.hpp"` (or `#include "ball/core/dynamics.hpp"` for objects). Vehicle/object-qualified; siblings under the same grandparent share the include path.
 - From inside `core/` or `core/tests/`: `#include "dynamics.hpp"` (unqualified, since they're in the same directory).
 
-In CMake: `target_include_directories(diff_drive_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../..)`. The first path is `core/` itself (for unprefixed includes); the second is `dynamics/` (so the `diff_drive/core/...` prefix resolves for consumers). No `/include` suffix anywhere — that nesting is gone.
+In CMake: `target_include_directories(diff_drive_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../..)`. The first path is `core/` itself (for unprefixed includes); the second is the grandparent — `vehicle_dynamics/` for vehicles, `sim/objects/` for objects — so the `<name>/core/...` prefix resolves for consumers. No `/include` suffix anywhere — that nesting is gone.
 
 Verify them three ways:
 1. **Autodiff in C++**: instantiate `DiffDriveDynamics<AutoDiffScalar<...>>` and compare in unit tests.
 2. **Finite differences**: cheap sanity check in tests.
-3. **Symbolic in Julia** (`dynamics/diff_drive/analysis/jacobian_verify.jl`, using `Symbolics.jl`): re-derives by symbolic differentiation and compares numerically. Re-run whenever the model changes.
+3. **Symbolic in Julia** (`vehicle_dynamics/diff_drive/analysis/jacobian_verify.jl`, using `Symbolics.jl`): re-derives by symbolic differentiation and compares numerically. Re-run whenever the model changes.
 
 The linear rollout error should scale as `O(‖δx‖²)` near the operating point — write a test that asserts this.
 
@@ -133,7 +139,7 @@ Build twice in CI: once for desktop with sanitizers, once cross-compiled for ESP
 - **Python 3.11+**, type hints required on public APIs.
 - **Gymnasium**, not legacy `gym`. **PettingZoo parallel API** for multi-agent.
 - **No business logic in pybind11 layer** — the binding is a thin shim. Wrappers (noise, delay, reward shaping, randomization) are pure Python.
-- **One env per file** under `dynamics/<vehicle>/bindings/envs/`. Each env exposes a `make()` factory.
+- **One env per file** under `vehicle_dynamics/<vehicle>/bindings/envs/`. Each env exposes a `make()` factory.
 - Use `ruff` for lint+format, `pyright` for typecheck.
 
 ## Shared simulation layer (`sim/`)
@@ -149,7 +155,7 @@ Each vehicle's `core/` advances its own state. Each step, `sim/` writes vehicle 
 
 ## Uncertainty injection
 
-Lives in Python wrappers under `training/` or `dynamics/<vehicle>/bindings/envs/`, **never in any C++ core**. The MPC running the same core on ESP32 must see a clean, deterministic model.
+Lives in Python wrappers under `training/` or `vehicle_dynamics/<vehicle>/bindings/envs/`, **never in any C++ core**. The MPC running the same core on ESP32 must see a clean, deterministic model.
 
 - **Observation noise**: additive Gaussian per-component, configurable σ.
 - **Action noise**: multiplicative gain perturbation + additive noise + occasional dropout (zero with probability p).

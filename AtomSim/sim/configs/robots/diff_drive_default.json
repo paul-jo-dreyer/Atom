@@ -1,0 +1,5 @@
+{
+  "name": "diff_drive_default",
+  "chassis_side": 0.060,
+  "manipulator": "default_pusher"
+}

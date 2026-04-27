@@ -1,0 +1,46 @@
+\section{Verification}
+\label{sec:verification}
+
+The C++ in \texttt{core/} and the equations in this document must stay in agreement. We pin them together with two layers of tests: doctest unit tests in \texttt{core/tests/} that run on every CI build, and the Jupyter notebook \texttt{analysis/dynamics\_tour.ipynb} that exercises the same code from Python with plots and looser numerical tolerances. This section maps each result derived above to the test that verifies it.
+
+\subsection{Test crosswalk}
+
+\begin{center}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Notebook test} & \textbf{Verifies} & \textbf{Equation} \\
+\midrule
+1. Motor-lag step response  & First-order lag on $\dot v$                                & \eqref{eq:vdot} \\
+2. Pure rotation            & No side slip ($v = 0$, $p_x = p_y = 0$)                    & \eqref{eq:noslip} \\
+                            & Yaw rate from differential commands                        & \eqref{eq:fwd-kin} \\
+3. Constant arc             & Steady-state turn radius $R = v_{ss}/\omega_{ss}$          & \eqref{eq:icr} \\
+4. Linearisation residual   & Analytic $A$ matches the nonlinear flow to first order    & \eqref{eq:Amat}, \eqref{eq:lin-residual} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \texttt{core/tests/} doctest binary runs three lower-level checks: state derivative at the origin under symmetric control, single-step RK4 sanity, and finiteness of $A$ and $B$. It is the build-time canary; the notebook is the analyst-facing companion that produces plots.
+
+\subsection{Tests still to add}
+
+Two checks are derived in this document but not yet wired into either test layer:
+
+\begin{enumerate}
+    \item \textbf{Constraint satisfaction along long rollouts.} \eqref{eq:noslip} is identically satisfied by the parameterisation \eqref{eq:state-ode}, so this is essentially a regression test against the position equations being edited. Future Test~5 of the notebook: roll out for several seconds under a varying control sequence and assert
+        \[
+            \bigl|-\sin\theta(t)\,\dot p_x(t) + \cos\theta(t)\,\dot p_y(t)\bigr| < 10^{-12}
+        \]
+        at every time step.
+    \item \textbf{Finite-difference Jacobian comparison in C++.} \S\ref{sec:linearization} derives $A$ and $B$ analytically; the doctest binary should compare them to centred-difference estimates at randomly sampled operating points. This is the cheapest of the three verification routes from \S\ref{sec:linearization} and the highest-value to add first.
+\end{enumerate}
+
+When either of these is added, this section's table grows by one row and the corresponding bullet here is removed.
+
+\subsection{Editing discipline}
+
+The chain of authority across the project is:
+\begin{quote}
+    LaTeX (\textit{here}) $\;\longrightarrow\;$ C++ (\texttt{core/}) $\;\longrightarrow\;$ Python (\texttt{bindings/}, notebook).
+\end{quote}
+
+If the LaTeX changes, the C++ must change to match before the doctest binary is re-run. If the C++ changes without the LaTeX, the doctest will likely still pass --- but the document will be wrong, and the next person to read it will derive the wrong control law from the wrong equation. The reviewer's job on any \texttt{core/} pull request is to confirm the LaTeX is updated in lockstep.

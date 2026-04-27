@@ -1,6 +1,6 @@
 % Source of truth for the differential-drive (skid-steer) vehicle dynamics
-% implemented in dynamics/diff_drive/core/. The C++ headers in core/ should
-% match the equations here symbol-for-symbol; the notebook in
+% implemented in vehicle_dynamics/diff_drive/core/. The C++ headers in core/
+% should match the equations here symbol-for-symbol; the notebook in
 % analysis/dynamics_tour.ipynb verifies the implementation numerically.
 %
 % Structure: this file is a thin shell. The actual content lives in
@@ -24,7 +24,7 @@ ending at the analytic Jacobians used by the linearisation. It is the
 canonical reference for the C++ implementation in
 
 bl bla blaaa  ssss
-\texttt{dynamics/diff\_drive/core/} and the numerical companion notebook in
+\texttt{vehicle\_dynamics/diff\_drive/core/} and the numerical companion notebook in
 \texttt{analysis/dynamics\_tour.ipynb}.
 \end{abstract}
 
@@ -33,11 +33,9 @@ bl bla blaaa  ssss
 
 \input{sections/01_setup}
 \input{sections/02_constraints}
-
-% --- Sections to be added as the model grows: ------------------------------
-% \input{sections/03_kinematics}     % wheel speeds <-> body twist
-% \input{sections/04_dynamics}       % motor lag, full state ODE
-% \input{sections/05_linearization}  % analytic Jacobians, verification routes
-% \input{sections/06_verification}   % links each result to a notebook test
+\input{sections/03_kinematics}
+\input{sections/04_dynamics}
+\input{sections/05_linearization}
+\input{sections/06_verification}
 
 \end{document}

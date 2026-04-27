@@ -36,7 +36,9 @@ FetchContent_MakeAvailable(doctest)
 enable_testing()
 
 # Subprojects
-add_subdirectory(dynamics/diff_drive/core)
-add_subdirectory(dynamics/diff_drive/bindings)
+add_subdirectory(vehicle_dynamics/diff_drive/core)
+add_subdirectory(vehicle_dynamics/diff_drive/bindings)
+add_subdirectory(sim/objects/ball/core)
+add_subdirectory(sim/objects/ball/bindings)
 # add_subdirectory(sim)              # later, M4
 # add_subdirectory(tests)            # later, top-level integration tests

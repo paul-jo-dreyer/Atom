@@ -6,7 +6,8 @@ Multi-agent RL simulator for differential-drive robots. See `CLAUDE.md` for full
 
 ```
 AtomSim/
-├── dynamics/<vehicle>/    # core/, bindings/, embedded/, analysis/ per vehicle
+├── vehicle_dynamics/<vehicle>/    # core/, bindings/, embedded/, analysis/ per vehicle
+├── sim/objects/<object>/   # core/, bindings/, analysis/ per passive object (ball, box, …)
 ├── sim/                   # Box2D world (M4+)
 ├── tests/                 # cross-cutting integration tests (M4+)
 └── training/              # RL scripts (M3+)
@@ -60,7 +61,7 @@ Use the **release** build for Python — the debug `.so` is linked against ASan 
 
 ```bash
 cd ..   # to git root
-PYTHONPATH=AtomSim/build/release/dynamics/diff_drive/bindings \
+PYTHONPATH=AtomSim/build/release/vehicle_dynamics/diff_drive/bindings \
   .venv/bin/python -c "
 import diff_drive_py as dd, numpy as np
 dyn = dd.DiffDriveDynamics()
@@ -96,15 +97,15 @@ This file is emitted by the debug build (`CMAKE_EXPORT_COMPILE_COMMANDS=ON` in t
 |---|---|
 | `Could NOT find Eigen3` | Install `libeigen3-dev` (≥ 3.4). |
 | `Could NOT find pybind11` | `uv sync` from the git root; pybind11 is a project dep, not a system package. |
-| `ctest` reports 0 tests | doctest's CMake helper didn't load — check the `include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)` line in `dynamics/diff_drive/core/tests/CMakeLists.txt`. |
+| `ctest` reports 0 tests | doctest's CMake helper didn't load — check the `include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)` line in `vehicle_dynamics/diff_drive/core/tests/CMakeLists.txt`. |
 | Python `ImportError: ... undefined symbol: __asan_*` | You're importing the debug `.so`. Use the release build, or `LD_PRELOAD=$(gcc -print-file-name=libasan.so)` the debug one. |
 | `Unrecognized "version" field` from cmake | Your cmake is too old for the preset schema. AtomSim targets schema v3 (cmake ≥ 3.21). |
 
 ## Include conventions
 
-Headers in `dynamics/<vehicle>/core/` are flat — no nested `include/<vehicle>/`. The `core/` CMake target exposes two INTERFACE include dirs (`core/` and `dynamics/`), so:
+Headers in `vehicle_dynamics/<vehicle>/core/` (and `sim/objects/<object>/core/`) are flat — no nested `include/<name>/`. Each `core/` CMake target exposes two INTERFACE include dirs (`core/` itself and its grandparent), so:
 
-- From `sim/`, `bindings/`, or any sibling: `#include "diff_drive/core/dynamics.hpp"`.
+- From `sim/`, `bindings/`, or any sibling: `#include "diff_drive/core/dynamics.hpp"` (vehicles) or `#include "ball/core/dynamics.hpp"` (objects).
 - From inside `core/` or `core/tests/`: `#include "dynamics.hpp"`.
 
 See `CLAUDE.md` "Include conventions" for the rationale.

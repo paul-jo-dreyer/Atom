@@ -1,0 +1,67 @@
+\section{Linearisation about an operating point}
+\label{sec:linearization}
+
+For controller design (LQR, MPC) and stability analysis we need the Jacobians $A = \partial f / \partial \bx$ and $B = \partial f / \partial u$ evaluated at an operating point $(\bx^{\star}, u^{\star})$. They are sparse and analytic, with no allocation and only a handful of elementary functions --- exactly what an embedded linear MPC solver wants.
+
+\subsection{State Jacobian \texorpdfstring{$A$}{A}}
+
+Differentiating \eqref{eq:state-ode} entry-by-entry with respect to $\bx$,
+\begin{equation}
+    A(\bx) \;=\; \frac{\partial f}{\partial \bx} \;=\;
+    \begin{bmatrix}
+        0 & 0 & -v\sin\theta & \cos\theta & 0 \\
+        0 & 0 & \phantom{-}v\cos\theta & \sin\theta & 0 \\
+        0 & 0 & 0 & 0 & 1 \\
+        0 & 0 & 0 & -1/\taum & 0 \\
+        0 & 0 & 0 & 0 & -1/\taum
+    \end{bmatrix}.
+    \label{eq:Amat}
+\end{equation}
+
+Structure worth noticing:
+\begin{description}
+    \item[Position rows.] Rows~1--2 are exactly the kinematic-unicycle rows: position rates depend on $(v, \theta)$ but on neither position nor $\omega$.
+    \item[Heading row.] Row~3 is trivial --- $\dot\theta$ depends only on $\omega$.
+    \item[Velocity rows.] Rows~4--5 are pure first-order decay, independent of \emph{anything else} in the state. The motor lag does not couple to position or heading.
+    \item[Operating-point dependence.] Only column~3 (the $\theta$-derivatives) and column~4 (the $v$-derivatives in rows~1--2) carry trigonometric terms. Everything else is a constant.
+\end{description}
+
+\subsection{Control Jacobian \texorpdfstring{$B$}{B}}
+
+The control affects only the velocity rows of $f$, through the commanded twist \eqref{eq:body-cmd}. Differentiating with respect to $u = (v_L, v_R)$:
+\begin{equation}
+    B \;=\; \frac{\partial f}{\partial u} \;=\;
+    \begin{bmatrix}
+        0 & 0 \\
+        0 & 0 \\
+        0 & 0 \\
+        \phantom{-}\dfrac{1}{2\,\taum} & \dfrac{1}{2\,\taum} \\[8pt]
+        -\dfrac{1}{\trackw\,\taum} & \dfrac{1}{\trackw\,\taum}
+    \end{bmatrix}.
+    \label{eq:Bmat}
+\end{equation}
+$B$ is constant: it depends on neither $\bx$ nor $u$. The signs of the bottom row encode left-handed-versus-right-handed yaw: a positive $v_R$ alone produces positive $\omega$ (CCW yaw); a positive $v_L$ alone produces negative $\omega$ (CW). Row~4 is symmetric in the two wheels because the body forward velocity is their average.
+
+\subsection{Linear rollout error}
+
+Near the operating point the nonlinear flow agrees with the linear approximation up to second order. By Taylor's theorem, for fixed $u^{\star}$,
+\begin{equation}
+    f(\bx^{\star} + \delta\bx,\, u^{\star})
+    \;-\; f(\bx^{\star},\, u^{\star})
+    \;-\; A(\bx^{\star})\,\delta\bx
+    \;=\; \mathcal{O}\bigl(\|\delta\bx\|^{2}\bigr).
+    \label{eq:lin-residual}
+\end{equation}
+Plotting the residual norm against $\|\delta\bx\|$ on log--log axes therefore gives a slope of exactly $2$ when the analytic $A$ in \eqref{eq:Amat} is correct. This is the strongest single test of the linearisation, and the one Test~4 of \texttt{dynamics\_tour.ipynb} runs (see \S\ref{sec:verification}).
+
+\subsection{Verification routes}
+
+We treat \eqref{eq:Amat}--\eqref{eq:Bmat} as the definitive analytic form, then verify them by three independent means:
+
+\begin{enumerate}
+    \item \textbf{Finite differences in C++.} Compute centred-difference estimates of $A$ and $B$ at random operating points and compare entry-wise. Cheap; catches sign flips, factor-of-two errors, and missing entries. \emph{To be added as a doctest case in \texttt{core/tests/}.}
+    \item \textbf{Forward-mode autodiff in C++.} Instantiate \texttt{DiffDriveDynamics<\linebreak[1]Eigen::AutoDiffScalar<Eigen::Matrix<double,5,1>>>} and read $A$ off the autodiff result directly; compare to the analytic form. \emph{To be added once an autodiff dependency is wired in.}
+    \item \textbf{Symbolic re-derivation in Julia.} \texttt{analysis/jacobian\_verify.jl} (planned) re-derives \eqref{eq:Amat}--\eqref{eq:Bmat} symbolically with \texttt{Symbolics.jl} and compares numerically at random operating points. This catches errors in the LaTeX itself, not just in the C++.
+\end{enumerate}
+
+The slope-2 numerical test in the notebook (Test~4) sits across all three routes: it verifies the C++ implementation \emph{and} the analytic form simultaneously, without referring to any third source. As long as that test passes, $A$ is correct in the dynamic --- ``does the simulation flow agree with the linear flow near the operating point?'' --- sense, even if some hand-derived entries happened to be wrong they would have to be wrong in compensating ways. It is the single test most worth running on every CI build.

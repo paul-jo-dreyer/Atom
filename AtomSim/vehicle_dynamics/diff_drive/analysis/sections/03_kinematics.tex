@@ -1,0 +1,51 @@
+\section{Kinematics: wheel speeds and body twist}
+\label{sec:kinematics}
+
+The constraints in \S\ref{sec:constraints} relate wheel rim velocities $(v_L, v_R)$ to body twist $(v, \omega)$ via \eqref{eq:wheel-to-body}. This section unpacks the consequences of that map: how to convert between actuator space and body space, the geometric picture, and the special operating modes that come up later.
+
+\subsection{Forward and inverse maps}
+
+The forward map (wheel commands $\to$ body twist), restated from \eqref{eq:wheel-to-body},
+\begin{equation}
+    v = \half(v_L + v_R),
+    \qquad
+    \omega = \frac{v_R - v_L}{\trackw}.
+    \label{eq:fwd-kin}
+\end{equation}
+The inverse map (desired body twist $\to$ wheel commands) follows immediately from the rolling constraints in \S\ref{sec:constraints}:
+\begin{equation}
+    v_L = v - \half\trackw\,\omega,
+    \qquad
+    v_R = v + \half\trackw\,\omega.
+    \label{eq:inv-kin}
+\end{equation}
+Both maps are linear and invertible, so the kinematic state of the differential drive is captured equally well in either parameterisation. Internally the dynamics core in \S\ref{sec:dynamics} carries $(v, \omega)$ as state and treats $(v_L, v_R)$ as the boundary input, because the body twist is what couples to the motor lag and to Box2D.
+
+\subsection{Instantaneous centre of rotation}
+
+For any non-zero $\omega$ the body's instantaneous motion is a rotation about a point fixed in the world frame at signed distance $R$ along $\ybody$, where
+\begin{equation}
+    R \;=\; \frac{v}{\omega} \;=\; \frac{\trackw}{2}\cdot\frac{v_L + v_R}{v_R - v_L}.
+    \label{eq:icr}
+\end{equation}
+This is the instantaneous centre of rotation (ICR). $R$ is the signed turn radius: positive when turning left (CCW), negative when turning right.
+
+\subsection{Special operating modes}
+\begin{description}
+    \item[Pure forward.] $v_L = v_R \implies \omega = 0$, $v = v_L = v_R$. Straight-line motion; ICR at infinity.
+    \item[Pure rotation.] $v_L = -v_R \implies v = 0$, $\omega = 2 v_R / \trackw$. The vehicle spins about the body origin; ICR coincident with the axle midpoint.
+    \item[One wheel locked.] $v_L = 0 \implies v = v_R/2$, $\omega = v_R/\trackw$, $R = \trackw/2$. The vehicle pivots about the locked wheel; ICR at the locked wheel's contact point.
+\end{description}
+
+These three modes form a useful test set --- each isolates one component of \eqref{eq:fwd-kin} from the others, and Test~2 and Test~3 of \texttt{dynamics\_tour.ipynb} exercise the first two directly (\S\ref{sec:verification}).
+
+\subsection{The kinematic unicycle interpretation}
+
+Once the no-slip constraint \eqref{eq:noslip} is imposed, the planar motion of the vehicle is entirely described by a unicycle on $(p_x, p_y, \theta)$ driven by the body twist $(v, \omega)$:
+\begin{align}
+    \dot p_x   &= v\cos\theta, \\
+    \dot p_y   &= v\sin\theta, \\
+    \dot\theta &= \omega.
+    \label{eq:unicycle}
+\end{align}
+The differential-drive structure shows up only in (i) how $(v, \omega)$ are produced by the wheels --- equation \eqref{eq:fwd-kin} above --- and (ii) the motor lag in \S\ref{sec:dynamics} that separates commanded from realised body twist. Many planning algorithms operate at the unicycle level and only invert through \eqref{eq:inv-kin} at the lowest control layer; we keep both layers explicit here because the motor lag couples them at the dynamics level.

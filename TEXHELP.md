@@ -1,6 +1,6 @@
 # LaTeX workflow
 
-Reference for compiling the analysis documents in this repo (`AtomSim/dynamics/<vehicle>/analysis/diff_drive.tex` and friends). The main document is split into a thin shell + `\input`-ed section files; this guide covers the compile commands and how to set up watch-on-save so you can iterate without thinking about it.
+Reference for compiling the analysis documents in this repo (`AtomSim/vehicle_dynamics/<vehicle>/analysis/diff_drive.tex` and friends, plus `AtomSim/sim/objects/<object>/analysis/...` once those exist). The main document for each is split into a thin shell + `\input`-ed section files; this guide covers the compile commands and how to set up watch-on-save so you can iterate without thinking about it.
 
 ## One-time setup
 
@@ -19,7 +19,7 @@ If you only have `pdflatex` (no `latexmk`), see the manual recipe at the bottom.
 From the directory containing the main `.tex` file:
 
 ```bash
-cd AtomSim/dynamics/diff_drive/analysis
+cd AtomSim/vehicle_dynamics/diff_drive/analysis
 latexmk -pdf diff_drive.tex
 ```
 
@@ -65,7 +65,7 @@ If you want to opt this project into LaTeX Workshop's `latexmk` recipe explicitl
 ## Manual recipe (if you skipped `latexmk`)
 
 ```bash
-cd AtomSim/dynamics/diff_drive/analysis
+cd AtomSim/vehicle_dynamics/diff_drive/analysis
 pdflatex -interaction=nonstopmode -halt-on-error diff_drive.tex
 pdflatex -interaction=nonstopmode -halt-on-error diff_drive.tex   # second pass settles TOC + refs
 ```

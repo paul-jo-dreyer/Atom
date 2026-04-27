@@ -1,0 +1,70 @@
+\section{Dynamics: motor lag and the state ODE}
+\label{sec:dynamics}
+
+The kinematic map of \S\ref{sec:kinematics} treats wheel commands as instantaneously producing the desired body twist. Real motors have inertia, controller dynamics, and current limits; their realised speed lags the command. We fold all of this into a single first-order lag on the body velocities.
+
+\subsection{Commanded body twist}
+
+The wheel command pair $u = (v_L, v_R)$ produces a commanded body twist via the forward kinematic map \eqref{eq:fwd-kin}:
+\begin{equation}
+    v_{\text{cmd}} = \half(v_L + v_R),
+    \qquad
+    \omega_{\text{cmd}} = \frac{v_R - v_L}{\trackw}.
+    \label{eq:body-cmd}
+\end{equation}
+``Commanded'' to distinguish from the realised body velocities $(v, \omega)$ that appear in the state.
+
+\subsection{Motor lag}
+
+The realised body velocities track the commanded values through a first-order lag with time constant $\taum$:
+\begin{align}
+    \dot v       &\;=\; \frac{1}{\taum}\,\bigl(v_{\text{cmd}} - v\bigr),
+    \label{eq:vdot} \\
+    \dot \omega  &\;=\; \frac{1}{\taum}\,\bigl(\omega_{\text{cmd}} - \omega\bigr).
+    \label{eq:omegadot}
+\end{align}
+The same time constant is used for both channels. We could carry separate $\taum^{v}$ and $\taum^{\omega}$ if a motor identification campaign warranted it, but in practice the difference is absorbed into the per-episode domain randomisation in \texttt{training/}.
+
+\begin{remark}[Why first-order, not second-order?]
+A second-order lag would track an additional state per channel (acceleration), capturing the motor's torque dynamics more faithfully. For the wheel masses and drive sizing we expect, the second-order modes are well above the policy's control bandwidth and a first-order fit is adequate. The model can be promoted to second-order later without disturbing anything outside this section.
+\end{remark}
+
+\subsection{Full state ODE}
+
+Stack the position, heading, and body twist into a single state vector $\bx \in \R^{5}$:
+\begin{equation}
+    \bx \;=\; \begin{pmatrix} p_x & p_y & \theta & v & \omega \end{pmatrix}^{\!\top}.
+\end{equation}
+Combining the unicycle kinematics \eqref{eq:unicycle} with the motor lag \eqref{eq:vdot}--\eqref{eq:omegadot} and substituting \eqref{eq:body-cmd}:
+\begin{equation}
+    \dot \bx \;=\; f(\bx,\, u) \;=\;
+    \begin{pmatrix}
+        v \cos\theta \\[2pt]
+        v \sin\theta \\[2pt]
+        \omega \\[4pt]
+        \dfrac{1}{\taum}\!\left(\half(v_L + v_R) \,-\, v\right) \\[6pt]
+        \dfrac{1}{\taum}\!\left(\dfrac{v_R - v_L}{\trackw} \,-\, \omega\right)
+    \end{pmatrix}.
+    \label{eq:state-ode}
+\end{equation}
+This is the equation \texttt{DiffDriveDynamics::continuous} in \texttt{core/dynamics.hpp} implements verbatim. The integrator (\texttt{rk4\_step} in \texttt{core/integrators.hpp}) treats $u$ as zero-order-hold over a step of length $\Delta t$ and advances $\bx$ accordingly.
+
+\subsection{Why 5-D, not 7-D?}
+
+There are three reasonable parameterisations:
+
+\begin{description}
+    \item[3-D kinematic.] State $(p_x, p_y, \theta)$, input $(v, \omega)$. No actuator dynamics --- fine for kinematic planners but useless for tracking control.
+    \item[5-D body-lag.] State $(p_x, p_y, \theta, v, \omega)$, input $(v_L, v_R)$. Single first-order lag at the body level. \emph{This document.}
+    \item[7-D wheel-lag.] State $(p_x, p_y, \theta, \dot\phi_L, \dot\phi_R, \ldots)$, input $(v_L, v_R)$. Per-wheel lag, body twist computed downstream.
+\end{description}
+
+We chose the middle option: it captures the dominant transient (motor lag) without paying for two redundant per-wheel states, and it keeps the embedded MPC problem small enough that linearised solvers like TinyMPC stay in their sweet spot. If a future task demonstrates per-wheel lag matters --- e.g., uneven loading or one motor saturating before the other --- the model expands to 7-D, but evidence-driven, not preemptively.
+
+\subsection{Slip}
+
+The model assumes pure rolling. The kinematic map \eqref{eq:fwd-kin} carries no slip term, and the motor lag operates on the resulting body velocities directly. Domain randomisation on $\trackw$, $\taum$, and the per-wheel gain absorbs much of what slip would contribute in practice. If a deployed policy starts exploiting non-physical kinematic behaviour --- e.g., turning faster than $\omega_{\text{cmd}}$ permits --- a velocity-dependent slip term such as
+\begin{equation}
+    \omega_{\text{achieved}} \;=\; \omega_{\text{cmd}}\,(1 - \alpha\,|v|)
+\end{equation}
+can be folded into \eqref{eq:body-cmd}, but only as a corrective response to observed exploit, not as an a-priori complication.
