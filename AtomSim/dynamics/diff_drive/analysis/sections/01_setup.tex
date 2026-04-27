@@ -1,0 +1,53 @@
+\section{Setup and notation}
+\label{sec:setup}
+
+\subsection{Frames}
+
+We work entirely in the plane. The world frame is inertial with axes
+$(\hat{x}_w, \hat{y}_w)$. The body frame is rigidly attached to the vehicle
+at the geometric centre of the wheel axle, with $\xbody$ pointing forward
+(the direction of travel when both wheels rotate equally) and $\ybody$
+pointing to the left:
+\begin{equation}
+    \xbody = \begin{pmatrix}\cos\theta \\ \sin\theta\end{pmatrix},
+    \qquad
+    \ybody = \begin{pmatrix}-\sin\theta \\ \phantom{-}\cos\theta\end{pmatrix}.
+    \label{eq:body-axes}
+\end{equation}
+
+\subsection{Configuration and velocities}
+
+The configuration is
+\begin{equation}
+    q \;=\; (p_x,\, p_y,\, \theta) \;\in\; \R^{2} \times \Sone,
+\end{equation}
+where $(p_x, p_y)$ is the world-frame position of the wheel-axle midpoint
+and $\theta$ is the heading. We use the body twist $(v, \omega)$ as the
+dynamical coordinates for translational and angular velocity:
+\begin{align}
+    v       &\;=\; \dot p_x \cos\theta + \dot p_y \sin\theta, \\
+    \omega   &\;=\; \dot\theta.
+\end{align}
+Once the no-side-slip constraint of \S\ref{sec:constraints} is imposed,
+this reduces to $(\dot p_x, \dot p_y) = v\,\xbody$.
+
+\subsection{Geometric and actuator parameters}
+
+\begin{description}
+    \item[Track width $\trackw$] --- distance between the left and right
+        wheel contacts. Default \(0.2\,\mathrm{m}\).
+    \item[Wheel radius $\rwheel$] --- used only when converting between
+        commanded wheel angular velocity $\dot\phi$ and rim velocity
+        $v_w = \rwheel\,\dot\phi$.
+    \item[Motor time constant $\taum$] --- first-order lag from commanded
+        to realised body velocities. Default \(0.05\,\mathrm{s}\).
+\end{description}
+
+\subsection{Wheel inputs}
+
+The control input is the pair of commanded wheel \emph{rim} velocities
+$u = (v_L,\, v_R)$, with $v_L = \rwheel\,\dot\phi_L$ and similarly for the
+right wheel. We use $v_L,\, v_R$ rather than $\dot\phi_L,\, \dot\phi_R$
+throughout because the wheel radius is absorbed at the controller boundary
+and never appears in the body dynamics. The \texttt{Control<Scalar>} type
+in \texttt{types.hpp} stores exactly this pair.

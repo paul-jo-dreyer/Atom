@@ -1,0 +1,39 @@
+% Shared preamble for the diff_drive analysis document and any standalone
+% derivations that share its notation. Keep this file lean — every package
+% added here gets pulled in by every component that includes it.
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black
+}
+
+% --- Notation macros -------------------------------------------------------
+% Vectors and sets
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Sone}{S^{1}}
+
+% Body-frame unit vectors
+\newcommand{\xbody}{\hat{x}_{b}}
+\newcommand{\ybody}{\hat{y}_{b}}
+
+% Vehicle parameters
+\newcommand{\trackw}{W}             % track width
+\newcommand{\rwheel}{r_{w}}         % wheel radius
+\newcommand{\taum}{\tau}            % motor time constant
+
+% Convenience
+\newcommand{\half}{\tfrac{1}{2}}
+
+% --- Theorem environments --------------------------------------------------
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}

@@ -23,5 +23,24 @@
         "**/build": true,
         "**/.venv": true,
         "**/uv.lock": true
+    },
+    "latex-workshop.latex.recipe.default": "latexmk",
+    "latex-workshop.latex.autoBuild.run": "onSave",
+    "latex-workshop.view.pdf.viewer": "tab",
+    "latex-workshop.formatting.latex": "latexindent",
+    "latex-workshop.latex.autoClean.run": "onBuilt",
+    "latex-workshop.latex.clean.fileTypes": [
+        "*.aux",
+        "*.bbl",
+        "*.blg",
+        "*.fdb_latexmk",
+        "*.fls",
+        "*.log",
+        "*.out",
+        "*.synctex.gz",
+        "*.toc"
+    ],
+    "[latex]": {
+        "editor.formatOnSave": false
     }
 }

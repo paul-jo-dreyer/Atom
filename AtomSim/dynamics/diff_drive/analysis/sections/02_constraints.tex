@@ -1,0 +1,152 @@
+\section{Wheel-contact constraints}
+\label{sec:constraints}
+
+The vehicle has two wheels, each treated as an ideal rigid disk rolling
+without slipping on a planar ground. Each contact point yields two scalar
+constraints --- one along the rolling direction and one perpendicular to it.
+Below we derive both, show that the lateral pair degenerates into a single
+body-level constraint, and prove that this constraint is non-holonomic.
+
+\subsection{Wheel positions and contact velocities}
+
+The left wheel sits a distance $\trackw/2$ along $\ybody$ from the body
+origin; the right wheel sits the same distance along $-\ybody$:
+\begin{align}
+    r_L &= \begin{pmatrix} p_x - \half\trackw\sin\theta \\
+                           p_y + \half\trackw\cos\theta \end{pmatrix},
+    &
+    r_R &= \begin{pmatrix} p_x + \half\trackw\sin\theta \\
+                           p_y - \half\trackw\cos\theta \end{pmatrix}.
+    \label{eq:wheel-positions}
+\end{align}
+Differentiating in time,
+\begin{align}
+    \dot r_L &= \begin{pmatrix}
+        \dot p_x - \half\trackw\,\dot\theta\cos\theta \\
+        \dot p_y - \half\trackw\,\dot\theta\sin\theta
+    \end{pmatrix},
+    &
+    \dot r_R &= \begin{pmatrix}
+        \dot p_x + \half\trackw\,\dot\theta\cos\theta \\
+        \dot p_y + \half\trackw\,\dot\theta\sin\theta
+    \end{pmatrix}.
+\end{align}
+
+\subsection{Lateral constraint (no side slip)}
+
+Each wheel cannot move along its axle. Both axles are aligned with $\ybody$,
+so for each wheel the constraint is $\dot r_w \cdot \ybody = 0$:
+\begin{align}
+    \dot r_L \cdot \ybody
+    &= -\dot p_x \sin\theta
+       + \half\trackw\,\dot\theta\cos\theta\sin\theta
+       + \dot p_y \cos\theta
+       - \half\trackw\,\dot\theta\sin\theta\cos\theta \notag\\
+    &= -\dot p_x \sin\theta + \dot p_y \cos\theta.
+\end{align}
+The $\dot\theta$-dependent cross terms cancel because the wheel offset is
+itself along $\ybody$, so the spin-induced contact velocity is along
+$\xbody$, not $\ybody$. The right wheel gives the same expression. Both
+lateral constraints therefore collapse into a single body-level Pfaffian
+constraint:
+\begin{equation}
+    \boxed{\;-\sin\theta\;\dot p_x + \cos\theta\;\dot p_y = 0.\;}
+    \label{eq:noslip}
+\end{equation}
+
+\subsection{Longitudinal constraint (pure rolling)}
+
+The forward velocity of each wheel contact equals its rim velocity:
+\begin{align}
+    \dot r_L \cdot \xbody &= v_L,
+    &
+    \dot r_R \cdot \xbody &= v_R.
+\end{align}
+Expanding,
+\begin{align}
+    v_L &= \dot p_x \cos\theta + \dot p_y \sin\theta - \half\trackw\,\dot\theta
+         = v - \half\trackw\,\omega, \\
+    v_R &= \dot p_x \cos\theta + \dot p_y \sin\theta + \half\trackw\,\dot\theta
+         = v + \half\trackw\,\omega.
+\end{align}
+Solving for the body twist,
+\begin{equation}
+    \boxed{\;
+        v = \half(v_L + v_R),
+        \qquad
+        \omega = \frac{v_R - v_L}{\trackw}.
+    \;}
+    \label{eq:wheel-to-body}
+\end{equation}
+This is the map used at the top of \texttt{DiffDriveDynamics::continuous}
+in \texttt{core/dynamics.hpp}.
+
+\subsection{Pfaffian form}
+
+Stacking the three constraints,
+\begin{equation}
+    \underbrace{\begin{bmatrix}
+        -\sin\theta & \cos\theta & 0 \\
+        \phantom{-}\cos\theta & \sin\theta & -\half\trackw \\
+        \phantom{-}\cos\theta & \sin\theta & +\half\trackw
+    \end{bmatrix}}_{A(q)}
+    \begin{bmatrix}\dot p_x \\ \dot p_y \\ \dot\theta\end{bmatrix}
+    \;=\;
+    \begin{bmatrix} 0 \\ v_L \\ v_R \end{bmatrix}.
+    \label{eq:pfaffian}
+\end{equation}
+Row~1 is homogeneous in $\dot q$ --- no actuator drives it. This is the
+non-holonomic part. Rows~2--3 are inhomogeneous, driven by the wheel
+commands.
+
+\subsection{The constraint is non-holonomic}
+
+A Pfaffian constraint $a(q) \cdot \dot q = 0$ is integrable to a function
+$h(q) = \mathrm{const}$ if and only if the dual distribution
+$\Delta = \ker a(q)$ is involutive (Frobenius theorem). For
+\eqref{eq:noslip},
+\begin{equation}
+    \Delta = \mathrm{span}\{X_1, X_2\},
+    \qquad
+    X_1 = \begin{pmatrix}\cos\theta \\ \sin\theta \\ 0\end{pmatrix},
+    \quad
+    X_2 = \begin{pmatrix}0 \\ 0 \\ 1\end{pmatrix},
+\end{equation}
+where $X_1$ generates pure forward motion and $X_2$ generates pure rotation
+in place. The Lie bracket is
+\begin{equation}
+    [X_1, X_2]
+    \;=\; \frac{\partial X_1}{\partial q}\,X_2 \;-\; \frac{\partial X_2}{\partial q}\,X_1
+    \;=\; \begin{pmatrix} -\sin\theta \\ \phantom{-}\cos\theta \\ 0 \end{pmatrix} \;-\; 0.
+\end{equation}
+This vector is precisely the body-lateral direction \eqref{eq:noslip}
+forbids, so $[X_1, X_2] \notin \Delta$. The distribution is therefore
+non-involutive, \eqref{eq:noslip} is non-integrable, and the system is
+non-holonomic. \(\square\)
+
+\begin{remark}[Chow's theorem and parking]
+The set $\{X_1,\, X_2,\, [X_1, X_2]\}$ spans $\R^{3}$ at every $q$. By
+Chow's theorem the system is locally controllable: any configuration
+$(p_x, p_y, \theta)$ can be reached by combining forward motion and
+rotation, even though the vehicle has only two control inputs and cannot
+translate sideways instantaneously. Parallel parking is the everyday
+demonstration of this fact.
+\end{remark}
+
+\subsection{Consistency with the implementation}
+\label{subsec:constraint-consistency}
+
+The state ODE in \texttt{dynamics.hpp} is written directly in body
+coordinates,
+\begin{equation}
+    \dot p_x = v\cos\theta,
+    \qquad
+    \dot p_y = v\sin\theta,
+\end{equation}
+which substituted into \eqref{eq:noslip} gives
+$-v\sin\theta\cos\theta + v\sin\theta\cos\theta = 0$ identically. The
+constraint is built into the parameterisation; the simulator does not need
+projection or Lagrange multipliers to enforce it at runtime. The numerical
+verification of this identity over a long rollout will live in
+\texttt{analysis/dynamics\_tour.ipynb} (a future ``Test 5: constraint
+satisfaction'' cell).

@@ -5,3 +5,32 @@ __pycache__/
 *.pyd
 .ipynb_checkpoints/
 .cache/.venv/
+
+# LaTeX build artifacts (analysis/)
+# Core (every build)
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+# Bibliography (BibTeX / biblatex) — if/when we add citations
+*.bbl
+*.bcf
+*.blg
+*.run.xml
+# List-of environments — if we add figures, tables, or code listings
+*.lof
+*.lol
+*.lot
+# Index — if we add \makeindex
+*.idx
+*.ilg
+*.ind
+# TikZ externalization — if we cache compiled figures
+*.auxlock
+*.dpth
+*.md5
+# minted (syntax-highlighted code listings)
+_minted-*/
