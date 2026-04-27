@@ -1,0 +1,7 @@
+build/
+.vscode/launch.json    # if it ends up machine-specific; keep settings.json
+__pycache__/
+*.so
+*.pyd
+.ipynb_checkpoints/
+.cache/
