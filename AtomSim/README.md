@@ -91,6 +91,85 @@ ls AtomSim/build/debug/compile_commands.json
 
 This file is emitted by the debug build (`CMAKE_EXPORT_COMPILE_COMMANDS=ON` in the root `CMakeLists.txt`). The repo `.vscode/settings.json` points clangd at it, so IDE intellisense should work as soon as the debug build has run once.
 
+## Running the sim
+
+All scripts live under `AtomSim/sim/python/` and self-locate the AtomSim root, so you can run them from anywhere. They require the **release** build of `sim_py` plus the `viz` dependency group:
+
+```bash
+cmake --preset release && cmake --build build/release   # from AtomSim/
+uv sync --group viz                                     # from git root
+```
+
+### Real-time teleop
+
+```bash
+.venv/bin/python AtomSim/sim/python/teleop.py
+```
+
+Controls: **WASD / arrows** drive, **R** reset, **ESC / Q** quit. If a gamepad is plugged in it's used alongside the keyboard — left stick = forward (Y axis), right stick = turn (X axis), button 0 = reset, button 6 = quit. Per-controller axis remapping lives in `viz/input/gamepad.py`.
+
+To record an episode for replay or training data, pass `--record`:
+
+```bash
+.venv/bin/python AtomSim/sim/python/teleop.py --record run1.npz
+# Or auto-named: --record alone → episode_YYYYMMDD_HHMMSS.npz in cwd.
+```
+
+### Replay an episode (live, scrubbable)
+
+```bash
+.venv/bin/python AtomSim/sim/python/replay_episode.py run1.npz
+```
+
+Controls: **Space** play/pause, **← →** ±1 frame, **Shift+← →** ±10 frames, **Home / End** jump, **R** restart, **[ / ]** ½× / 2× speed, **click + drag** the bottom timeline. The control-bar panel at top shows the **recorded** input bars — you watch the operator's actions animate exactly as they happened.
+
+### Render an episode to mp4 / gif
+
+```bash
+.venv/bin/python AtomSim/sim/python/render_episode.py run1.npz --out run1.mp4
+# Optional flags: --fps 30 --frame-stride 2 --quality 8 --style PATH
+# Format inferred from extension (.mp4 = H.264 via ffmpeg, .gif = Pillow).
+```
+
+The headless renderer uses no display server — works on a bare CI box or remote machine.
+
+### Multi-robot demo (1–6 robots)
+
+```bash
+.venv/bin/python AtomSim/sim/python/teleop_multi.py 4
+```
+
+Splits N robots between blue (top of field) and orange (bottom): 1 = 1 blue, 2 = 1+1, 3 = 2+1, 4 = 2+2, 5 = 3+2, 6 = 3+3. The first robot is driveable; the rest get synthetic animated control signals so all panel cells animate. Useful for inspecting the indicator layout for any team count.
+
+### Random-action gif demo
+
+```bash
+.venv/bin/python AtomSim/sim/python/random_gif.py random.gif
+```
+
+Five seconds at 24 fps of random `(forward, turn)` ∈ [-1, 1]² inputs converted into wheel commands. Seeded RNG (`default_rng(42)`) for reproducibility. Useful as a smoke test that the full sim → headless render → gif pipeline still works.
+
+## Visual style (YAML-driven)
+
+`AtomSim/sim/configs/styles/default.yaml` controls **everything visual**: resolution, the green field, the white wall and marking colours, robot/ball shape modes (`full | square_only | point` / `circle | point`), per-team colour overrides, and the cosmetic interior soccer markings (centre circle, halfway line, goalie boxes). Copy and tweak it for new looks (e.g. `analysis.yaml` for points-on-a-grid).
+
+The interior markings are pure overlay — they're drawn between the green turf and the white wall lines, and the ball passes through them with zero physics interaction. Goal physics (the gap in each side wall + the chamber behind it) is controlled separately by `WorldConfig.goal_y_half` and `goal_extension` on the C++ side, exposed through `sim_py.WorldConfig`.
+
+## Episode `.npz` format
+
+A single compressed `.npz` per episode contains:
+
+```
+time                   shape (T,)        sim time per step
+robot_<name>_state     shape (5, T)      [PX, PY, THETA, V, OMEGA]
+robot_<name>_action    shape (2, T)      [v_left, v_right] wheel commands
+robot_<name>_input     shape (2, T)      [forward, turn] normalised ∈ [-1, 1]
+ball_<name>_state      shape (4, T)      [PX, PY, VX, VY]
+meta                   0-d object        JSON: dt, world cfg, agents, coordinate convention
+```
+
+State arrays are `(state_dim, T)` so per-component slicing is contiguous. The `meta.agents` manifest lets `Episode.scene_at(i)` fully reconstruct the scene from the .npz alone — no extra config files needed at render time. Read with `np.load(path, allow_pickle=True)` or `viz.Episode.load(path)`.
+
 ## Common red flags
 
 | Symptom | Likely cause |

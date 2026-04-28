@@ -7,6 +7,7 @@ so this backend is pixel-identical to the headless backend.
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -15,6 +16,8 @@ import pygame  # noqa: E402
 from ..scene import SceneSpec  # noqa: E402
 from ..style import StyleConfig  # noqa: E402
 from ._pygame_draw import PygameSceneDrawer  # noqa: E402
+
+OverlayFn = Callable[[pygame.Surface], None]
 
 
 class PygameLiveRenderer:
@@ -48,8 +51,15 @@ class PygameLiveRenderer:
         )
 
     def render(
-        self, scene: SceneSpec, hud_lines: list[str] | None = None
+        self,
+        scene: SceneSpec,
+        hud_lines: list[str] | None = None,
+        overlay: OverlayFn | None = None,
     ) -> None:
+        """Draw `scene` to the window. `overlay` (if provided) is called
+        with the WINDOW surface after the scene is blitted but before
+        `display.flip()` — use it to paint UI on top (scrubbers, debug
+        overlays, etc.) without flicker."""
         self._drawer.draw(self._render_surface, scene, hud_lines)
         if (
             self.style.resolution.render_w != self.style.resolution.output_w
@@ -62,6 +72,8 @@ class PygameLiveRenderer:
             self._window.blit(scaled, (0, 0))
         else:
             self._window.blit(self._render_surface, (0, 0))
+        if overlay is not None:
+            overlay(self._window)
         pygame.display.flip()
 
     def close(self) -> None:
