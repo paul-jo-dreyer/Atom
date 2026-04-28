@@ -62,8 +62,13 @@ class PygameSceneDrawer:
                 scene.field.x_half, scene.field.y_half
             )
 
+        # Draw order is critical: surround fill → green turf rect → white
+        # interior markings → white perimeter walls. If markings were drawn
+        # before the turf, the turf rectangle would paint over them.
         surface.fill(self.style.field.background)
-        self._draw_field(surface, scene)
+        self._draw_turf(surface, scene)
+        self._draw_markings(surface, scene)
+        self._draw_walls(surface, scene)
         for ball in scene.balls:
             self._draw_ball(surface, ball)
         for robot in scene.robots:
@@ -97,7 +102,24 @@ class PygameSceneDrawer:
 
     # ---- primitives ------------------------------------------------------
 
-    def _draw_field(self, surf: pygame.Surface, scene: SceneSpec) -> None:
+    def _draw_turf(self, surf: pygame.Surface, scene: SceneSpec) -> None:
+        """Filled rectangle of grass colour, slightly larger than the field
+        so the white perimeter walls sit ON the turf rather than at its edge."""
+        xh, yh = scene.field.x_half, scene.field.y_half
+        buffer_x = 0.08
+        buffer_y = 0.01
+        x0, y0 = self._w2s(-xh - buffer_x, yh + buffer_y)
+        xf, yf = self._w2s(xh + buffer_x, -yh - buffer_y)
+        pygame.draw.rect(
+            surf,
+            color=self.style.field.field_color,
+            rect=(x0, y0, xf - x0, yf - y0),
+            width=0,
+        )
+
+    def _draw_walls(self, surf: pygame.Surface, scene: SceneSpec) -> None:
+        """White perimeter + goal-chamber outlines. Drawn AFTER markings so
+        the wall lines sit on top of the centre circle and goalie boxes."""
         xh, yh = scene.field.x_half, scene.field.y_half
         gh, gx = scene.field.goal_y_half, scene.field.goal_extension
         color = self.style.field.walls
@@ -108,29 +130,74 @@ class PygameSceneDrawer:
             pygame.draw.line(surf, color, self._w2s(*p1), self._w2s(*p2), width)
 
         # Top + bottom walls (full-width).
-        line((-xh,  yh), ( xh,  yh))
-        line((-xh, -yh), ( xh, -yh))
+        line((-xh, yh), (xh, yh))
+        line((-xh, -yh), (xh, -yh))
 
         if not has_goals:
-            line((-xh, -yh), (-xh,  yh))
-            line(( xh, -yh), ( xh,  yh))
+            line((-xh, -yh), (-xh, yh))
+            line((xh, -yh), (xh, yh))
             return
 
         # Field walls split around the goal mouth.
-        line((-xh,  gh), (-xh,  yh))
-        line((-xh, -yh), (-xh, -gh))
-        line(( xh,  gh), ( xh,  yh))
-        line(( xh, -yh), ( xh, -gh))
+        line((-xh, -yh), (-xh, yh))
+        line((xh, -yh), (xh, yh))
 
         # Left goal chamber — U opening to the right.
-        line((-xh - gx,  gh), (-xh,  gh))
+        line((-xh - gx, gh), (-xh, gh))
         line((-xh - gx, -gh), (-xh, -gh))
         line((-xh - gx, -gh), (-xh - gx, gh))
 
         # Right goal chamber — U opening to the left.
-        line(( xh,  gh), ( xh + gx,  gh))
-        line(( xh, -gh), ( xh + gx, -gh))
-        line(( xh + gx, -gh), ( xh + gx, gh))
+        line((xh, gh), (xh + gx, gh))
+        line((xh, -gh), (xh + gx, -gh))
+        line((xh + gx, -gh), (xh + gx, gh))
+
+    def _draw_markings(self, surf: pygame.Surface, scene: SceneSpec) -> None:
+        """Cosmetic interior soccer-field lines: halfway line, centre circle,
+        goalie boxes. Drawn before the perimeter walls and physical objects
+        so they sit beneath everything that matters."""
+        m = self.style.markings
+        if not m.enabled:
+            return
+
+        xh, yh = scene.field.x_half, scene.field.y_half
+        color = m.color
+        width = max(3, m.line_width_px)
+
+        # Halfway line.
+        if m.halfway_line:
+            pygame.draw.line(
+                surf, color, self._w2s(0.0, -yh), self._w2s(0.0, yh), width
+            )
+
+        # Centre circle.
+        if m.center_circle_radius_m > 0.0:
+            cx, cy = self._w2s(0.0, 0.0)
+            r_px = self._m2px(m.center_circle_radius_m)
+            pygame.draw.circle(surf, color, (cx, cy), r_px, width)
+            pygame.draw.circle(surf, color, (cx, cy), r_px // 10, width * 5)
+
+        # Goalie boxes — open rectangles with the field-perimeter side absent.
+        bd = m.goalie_box_depth_m
+        bh = 0.5 * m.goalie_box_height_m
+        if bd > 0.0 and bh > 0.0:
+            # Left box (opens to the right): three sides.
+            p1 = self._w2s(-xh, bh)
+            p2 = self._w2s(-xh + bd, bh)
+            p3 = self._w2s(-xh + bd, -bh)
+            p4 = self._w2s(-xh, -bh)
+            pygame.draw.line(surf, color, p1, p2, width)
+            pygame.draw.line(surf, color, p2, p3, width)
+            pygame.draw.line(surf, color, p3, p4, width)
+
+            # Right box.
+            q1 = self._w2s(xh, bh)
+            q2 = self._w2s(xh - bd, bh)
+            q3 = self._w2s(xh - bd, -bh)
+            q4 = self._w2s(xh, -bh)
+            pygame.draw.line(surf, color, q1, q2, width)
+            pygame.draw.line(surf, color, q2, q3, width)
+            pygame.draw.line(surf, color, q3, q4, width)
 
     def _draw_ball(self, surf: pygame.Surface, ball: BallSpec) -> None:
         bs: BallStyle = self.style.ball
@@ -222,7 +289,7 @@ class PygameSceneDrawer:
     _ROW_TEAMS: tuple[str, str] = ("blue", "orange")
 
     def _draw_control_panel(self, surf: pygame.Surface, scene: SceneSpec) -> None:
-        row_h = self._hud_strip_px // 2
+        row_h = self._hud_strip_px // 3
         center_x = self._render_w / 2.0
         rosters = {t: [r for r in scene.robots if r.team == t] for t in self._ROW_TEAMS}
         total_cells = sum(min(len(rs), self._CELLS_PER_ROW) for rs in rosters.values())

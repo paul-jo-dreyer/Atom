@@ -21,6 +21,7 @@ from .scene import (
 )
 from .style import (
     BallStyle,
+    FieldMarkings,
     FieldStyle,
     Resolution,
     RobotStyle,
@@ -34,6 +35,7 @@ __all__ = [
     "BallStyle",
     "Episode",
     "EpisodeRecorder",
+    "FieldMarkings",
     "FieldSpec",
     "FieldStyle",
     "Resolution",

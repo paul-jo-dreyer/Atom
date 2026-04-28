@@ -108,12 +108,12 @@ def main() -> None:
         const="auto",
         default=None,
         help="Record an episode and save to PATH on quit. With no PATH, "
-             "auto-names episode_YYYYMMDD_HHMMSS.npz in the current dir.",
+        "auto-names episode_YYYYMMDD_HHMMSS.npz in the current dir.",
     )
     args = p.parse_args()
 
     # --- sim setup ---
-    robot_cfg, manip_parts = load_robot_config("diff_drive_sidewall")
+    robot_cfg, manip_parts = load_robot_config("diff_drive_default")
     robot_cfg.body_type = sim_py.BodyType.Dynamic
     robot_cfg.mass = 0.3
     robot_cfg.yaw_inertia = 5.0e-4
@@ -170,19 +170,27 @@ def main() -> None:
         rec = EpisodeRecorder(
             dt=DT,
             world={
-                "field_x_half":   float(world.config.field_x_half),
-                "field_y_half":   float(world.config.field_y_half),
-                "goal_y_half":    float(world.config.goal_y_half),
+                "field_x_half": float(world.config.field_x_half),
+                "field_y_half": float(world.config.field_y_half),
+                "goal_y_half": float(world.config.goal_y_half),
                 "goal_extension": float(world.config.goal_extension),
             },
             agents=[
-                {"name": "blue", "type": "diff_drive", "team": "blue",
-                 "config": {
-                     "chassis_side": float(robot_cfg.chassis_side),
-                     "manipulator_parts": manip_parts,
-                 }},
-                {"name": "main", "type": "ball", "team": None,
-                 "config": {"radius": float(ball_cfg.dynamics_params.radius)}},
+                {
+                    "name": "blue",
+                    "type": "diff_drive",
+                    "team": "blue",
+                    "config": {
+                        "chassis_side": float(robot_cfg.chassis_side),
+                        "manipulator_parts": manip_parts,
+                    },
+                },
+                {
+                    "name": "main",
+                    "type": "ball",
+                    "team": None,
+                    "config": {"radius": float(ball_cfg.dynamics_params.radius)},
+                },
             ],
         )
         print(f"Recording to {out_path}")
@@ -232,8 +240,11 @@ def main() -> None:
 
         # --- render ---
         scene = build_scene(
-            world, [("blue", robot)], [("main", ball)],
-            t=sim_t, teams={"blue": "blue"},
+            world,
+            [("blue", robot)],
+            [("main", ball)],
+            t=sim_t,
+            teams={"blue": "blue"},
         )
         scene.controls = {"blue": (inp.forward, inp.turn)}
         s, b = robot.state, ball.state
@@ -255,7 +266,9 @@ def main() -> None:
     if rec is not None and len(rec) > 0:
         ep = rec.finalize()
         ep.save(out_path)
-        print(f"Saved {ep.num_frames}-frame episode ({ep.num_frames * DT:.1f}s) to {out_path}")
+        print(
+            f"Saved {ep.num_frames}-frame episode ({ep.num_frames * DT:.1f}s) to {out_path}"
+        )
     renderer.close()
 
 

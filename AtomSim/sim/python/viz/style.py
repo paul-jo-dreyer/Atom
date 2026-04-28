@@ -28,15 +28,16 @@ def parse_color(s: str) -> RGB:
 
 @dataclass(frozen=True)
 class Resolution:
-    render_w: int          # internal raster width (pixels)
-    render_h: int          # internal raster height
-    output_w: int          # final blitted/exported width
-    output_h: int          # final blitted/exported height
+    render_w: int  # internal raster width (pixels)
+    render_h: int  # internal raster height
+    output_w: int  # final blitted/exported width
+    output_h: int  # final blitted/exported height
 
 
 @dataclass(frozen=True)
 class FieldStyle:
     background: RGB
+    field_color: RGB
     walls: RGB
     walls_width_px: int
 
@@ -49,9 +50,9 @@ class RobotStyle:
     body_outline_color: RGB | None
     manipulator_outline_color: RGB | None
     show_axes: bool
-    axes_length_m: float       # red x-axis and green y-axis line length
+    axes_length_m: float  # red x-axis and green y-axis line length
     axes_width_px: int
-    point_radius_px: int       # used when shape == "point"
+    point_radius_px: int  # used when shape == "point"
 
 
 @dataclass(frozen=True)
@@ -63,8 +64,23 @@ class BallStyle:
 
 
 @dataclass(frozen=True)
+class FieldMarkings:
+    """Cosmetic interior field lines (center circle, halfway line, goalie boxes).
+    Pure visual overlay — no physics interaction."""
+
+    enabled: bool = True
+    color: RGB = (255, 255, 255)
+    line_width_px: int = 2
+    center_circle_radius_m: float = 0.07
+    halfway_line: bool = True
+    goalie_box_depth_m: float = 0.06  # how far box extends into the field
+    goalie_box_height_m: float = 0.18  # full vertical extent (top to bottom)
+
+
+@dataclass(frozen=True)
 class TeamStyle:
     """Per-team color overrides applied on top of the default RobotStyle."""
+
     body_color: RGB | None = None
     manipulator_color: RGB | None = None
     body_outline_color: RGB | None = None
@@ -77,6 +93,7 @@ class StyleConfig:
     field: FieldStyle
     robot: RobotStyle
     ball: BallStyle
+    markings: FieldMarkings = field(default_factory=FieldMarkings)
     teams: dict[str, TeamStyle] = field(default_factory=dict)
     show_hud: bool = True
     hud_color: RGB = (30, 30, 30)
@@ -119,6 +136,7 @@ def load_style(path: str | Path) -> StyleConfig:
     f = raw["field"]
     field_style = FieldStyle(
         background=parse_color(f["background"]),
+        field_color=parse_color(f["field_color"]),
         walls=parse_color(f["walls"]),
         walls_width_px=int(f.get("walls_width_px", 3)),
     )
@@ -144,6 +162,17 @@ def load_style(path: str | Path) -> StyleConfig:
         point_radius_px=int(b.get("point_radius_px", 4)),
     )
 
+    mk = raw.get("markings") or {}
+    markings = FieldMarkings(
+        enabled=bool(mk.get("enabled", True)),
+        color=parse_color(mk.get("color", "#FFFFFF")),
+        line_width_px=int(mk.get("line_width_px", 2)),
+        center_circle_radius_m=float(mk.get("center_circle_radius_m", 0.07)),
+        halfway_line=bool(mk.get("halfway_line", True)),
+        goalie_box_depth_m=float(mk.get("goalie_box_depth_m", 0.06)),
+        goalie_box_height_m=float(mk.get("goalie_box_height_m", 0.18)),
+    )
+
     teams: dict[str, TeamStyle] = {}
     for name, td in (raw.get("teams") or {}).items():
         teams[name] = TeamStyle(
@@ -158,6 +187,7 @@ def load_style(path: str | Path) -> StyleConfig:
         field=field_style,
         robot=robot_style,
         ball=ball_style,
+        markings=markings,
         teams=teams,
         show_hud=bool(raw.get("show_hud", True)),
         hud_color=parse_color(raw["hud_color"]) if "hud_color" in raw else (30, 30, 30),

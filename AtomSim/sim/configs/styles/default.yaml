@@ -12,9 +12,22 @@ resolution:
   # Note: keep both width and height divisible by 16 for clean H.264 mp4 encoding.
 
 field:
-  background: "#FAFAFA"    # off-white
-  walls: "#3C3C3C"         # near-black field border
+  background: "#FFFFFF"    
+  field_color: "#2E7D32" # turf green; extends past the field bounds into the walls and goal chambers
+                           # render surface (beyond the white border lines)
+  walls: "#FFFFFF"         # white field-perimeter + goal-chamber lines
   walls_width_px: 3
+
+# Cosmetic interior field markings — center circle, halfway line, and goalie
+# (penalty) boxes. Drawn purely on the visual layer, no physics interaction.
+markings:
+  enabled: true
+  color: "#FFFFFF"
+  line_width_px: 3
+  center_circle_radius_m: 0.07     # ~scaled penalty arc / centre circle
+  halfway_line: true               # vertical line through x = 0
+  goalie_box_depth_m: 0.1         # distance the box extends INTO the field
+  goalie_box_height_m: 0.2        # full vertical extent (top to bottom)
 
 # Default style for any robot whose `team` key is null or unknown.
 # Per-team overrides go under `teams:` below.
@@ -25,8 +38,8 @@ robot:
   body_outline_color: "#282859"
   manipulator_outline_color: "#8C5523"
   show_axes: true          # red x-axis (forward) + green y-axis (left), drawn from body origin
-  axes_length_m: 0.04
-  axes_width_px: 2
+  axes_length_m: 0.025
+  axes_width_px: 3
   point_radius_px: 6       # circle radius when shape == "point"
 
 ball:
@@ -51,4 +64,4 @@ teams:
     manipulator_outline_color: "#431407"
 
 show_hud: true             # only honored by the live renderer
-hud_color: "#1E1E1E"
+hud_color: "#FFFFFF"       # readable on the green field
