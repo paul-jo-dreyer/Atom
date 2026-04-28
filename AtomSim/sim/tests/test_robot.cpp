@@ -104,8 +104,13 @@ TEST_CASE("Robot (dynamic) physically stops at a wall") {
     // Drive forward into the right wall and verify the body comes to rest
     // (not bouncing wildly, not phasing through). This exercises Box2D's
     // contact resolution — the whole point of going dynamic.
+    //
+    // Y-offset by 0.10 m so the robot impacts the upper-right wall segment
+    // rather than passing through the goal mouth (default goal_y_half=0.06).
     sim::World world{};
-    sim::Robot robot(world, dynamic_default());
+    auto cfg = dynamic_default();
+    cfg.y0 = 0.10f;
+    sim::Robot robot(world, cfg);
 
     diff_drive::Control<float> u;
     u << 0.5f, 0.5f;
@@ -120,6 +125,7 @@ TEST_CASE("Robot (dynamic) physically stops at a wall") {
     const auto& s = robot.state();
     CHECK(s[diff_drive::PX] < 0.375f);                       // didn't tunnel through
     CHECK(s[diff_drive::PX] > 0.30f);                        // got close to the wall
+    CHECK(s[diff_drive::PY] == doctest::Approx(0.10f).epsilon(0.05));  // no lateral drift
     CHECK(std::abs(s[diff_drive::V]) < 1.0e-3f);             // came to rest
 }
 

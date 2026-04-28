@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 class FieldSpec:
     x_half: float          # half-extent along x, metres
     y_half: float          # half-extent along y, metres
+    goal_y_half: float = 0.06        # half-height of goal opening (0 = no goals)
+    goal_extension: float = 0.06     # depth of goal box behind the wall
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ def build_scene(
         field=FieldSpec(
             x_half=float(field_cfg.field_x_half),
             y_half=float(field_cfg.field_y_half),
+            goal_y_half=float(field_cfg.goal_y_half),
+            goal_extension=float(field_cfg.goal_extension),
         ),
         robots=robot_specs,
         balls=ball_specs,

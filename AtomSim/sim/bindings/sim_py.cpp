@@ -36,11 +36,13 @@ PYBIND11_MODULE(sim_py, m) {
 
     py::class_<sim::WorldConfig>(m, "WorldConfig")
         .def(py::init<>())
-        .def_readwrite("field_x_half", &sim::WorldConfig::field_x_half)
-        .def_readwrite("field_y_half", &sim::WorldConfig::field_y_half)
-        .def_readwrite("gravity_x",    &sim::WorldConfig::gravity_x)
-        .def_readwrite("gravity_y",    &sim::WorldConfig::gravity_y)
-        .def_readwrite("substeps",     &sim::WorldConfig::substeps);
+        .def_readwrite("field_x_half",   &sim::WorldConfig::field_x_half)
+        .def_readwrite("field_y_half",   &sim::WorldConfig::field_y_half)
+        .def_readwrite("goal_y_half",    &sim::WorldConfig::goal_y_half)
+        .def_readwrite("goal_extension", &sim::WorldConfig::goal_extension)
+        .def_readwrite("gravity_x",      &sim::WorldConfig::gravity_x)
+        .def_readwrite("gravity_y",      &sim::WorldConfig::gravity_y)
+        .def_readwrite("substeps",       &sim::WorldConfig::substeps);
 
     py::class_<sim::RobotConfig>(m, "RobotConfig")
         .def(py::init<>())

@@ -99,12 +99,38 @@ class PygameSceneDrawer:
 
     def _draw_field(self, surf: pygame.Surface, scene: SceneSpec) -> None:
         xh, yh = scene.field.x_half, scene.field.y_half
-        tl = self._w2s(-xh, yh)
-        br = self._w2s(xh, -yh)
-        rect = pygame.Rect(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1])
-        pygame.draw.rect(
-            surf, self.style.field.walls, rect, width=self.style.field.walls_width_px
-        )
+        gh, gx = scene.field.goal_y_half, scene.field.goal_extension
+        color = self.style.field.walls
+        width = self.style.field.walls_width_px
+        has_goals = gh > 0.0 and gx > 0.0
+
+        def line(p1: tuple[float, float], p2: tuple[float, float]) -> None:
+            pygame.draw.line(surf, color, self._w2s(*p1), self._w2s(*p2), width)
+
+        # Top + bottom walls (full-width).
+        line((-xh,  yh), ( xh,  yh))
+        line((-xh, -yh), ( xh, -yh))
+
+        if not has_goals:
+            line((-xh, -yh), (-xh,  yh))
+            line(( xh, -yh), ( xh,  yh))
+            return
+
+        # Field walls split around the goal mouth.
+        line((-xh,  gh), (-xh,  yh))
+        line((-xh, -yh), (-xh, -gh))
+        line(( xh,  gh), ( xh,  yh))
+        line(( xh, -yh), ( xh, -gh))
+
+        # Left goal chamber — U opening to the right.
+        line((-xh - gx,  gh), (-xh,  gh))
+        line((-xh - gx, -gh), (-xh, -gh))
+        line((-xh - gx, -gh), (-xh - gx, gh))
+
+        # Right goal chamber — U opening to the left.
+        line(( xh,  gh), ( xh + gx,  gh))
+        line(( xh, -gh), ( xh + gx, -gh))
+        line(( xh + gx, -gh), ( xh + gx, gh))
 
     def _draw_ball(self, surf: pygame.Surface, ball: BallSpec) -> None:
         bs: BallStyle = self.style.ball

@@ -130,6 +130,8 @@ class Episode:
         field_spec = FieldSpec(
             x_half=float(world["field_x_half"]),
             y_half=float(world["field_y_half"]),
+            goal_y_half=float(world.get("goal_y_half", 0.06)),
+            goal_extension=float(world.get("goal_extension", 0.06)),
         )
 
         robots: list[RobotSpec] = []

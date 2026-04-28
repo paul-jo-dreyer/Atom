@@ -170,8 +170,10 @@ def main() -> None:
         rec = EpisodeRecorder(
             dt=DT,
             world={
-                "field_x_half": float(world.config.field_x_half),
-                "field_y_half": float(world.config.field_y_half),
+                "field_x_half":   float(world.config.field_x_half),
+                "field_y_half":   float(world.config.field_y_half),
+                "goal_y_half":    float(world.config.goal_y_half),
+                "goal_extension": float(world.config.goal_extension),
             },
             agents=[
                 {"name": "blue", "type": "diff_drive", "team": "blue",

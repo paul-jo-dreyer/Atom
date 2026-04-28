@@ -127,18 +127,55 @@ void Ball::pre_step(float dt) {
     // 2. Soft field-centering force outside the bounds. Linear restoring
     //    acceleration: a = -k * penetration along the violated axis. Applied
     //    as a discrete Euler velocity kick in user units (m/s, m).
+    //
+    //    Goal handling: when the ball's |y| is within the goal mouth band,
+    //    the effective x bound extends by `goal_extension` so the ball can
+    //    sit freely inside the goal chamber. Outside that band the field is
+    //    closed at ±field_x_half. The y pull-back is unchanged — the goal
+    //    chamber doesn't extend in y, and the goal-top/bottom walls
+    //    physically prevent the ball from leaving the band while inside.
     const float xh = world_->config().field_x_half;
     const float yh = world_->config().field_y_half;
+    const float gh = world_->config().goal_y_half;
+    const float gx = world_->config().goal_extension;
+    const float px = state_[::ball::PX];
+    const float py = state_[::ball::PY];
+
+    const bool in_goal_band = (gh > 0.0f) && (gx > 0.0f) && (std::abs(py) <= gh);
+    const float eff_xh = in_goal_band ? (xh + gx) : xh;
+
     float ax = 0.0f, ay = 0.0f;
-    if      (state_[::ball::PX] >  xh) ax = -cfg_.field_k * (state_[::ball::PX] - xh);
-    else if (state_[::ball::PX] < -xh) ax = -cfg_.field_k * (state_[::ball::PX] + xh);
-    if      (state_[::ball::PY] >  yh) ay = -cfg_.field_k * (state_[::ball::PY] - yh);
-    else if (state_[::ball::PY] < -yh) ay = -cfg_.field_k * (state_[::ball::PY] + yh);
+    if      (px >  eff_xh) ax = -cfg_.field_k * (px - eff_xh);
+    else if (px < -eff_xh) ax = -cfg_.field_k * (px + eff_xh);
+    if      (py >  yh)     ay = -cfg_.field_k * (py - yh);
+    else if (py < -yh)     ay = -cfg_.field_k * (py + yh);
     state_[::ball::VX] += ax * dt;
     state_[::ball::VY] += ay * dt;
 
     // 3. Integrate the linear-damping ODE via the closed-form step (user units).
     state_ = ::ball::exact_step(cfg_.dynamics_params, state_, dt);
+
+    // 3b. Goal-chamber backstop. Box2D's segment shapes are 2-sided, so if a
+    //     fast-moving ball center crosses the back wall in one step, Box2D's
+    //     contact response would then push it FURTHER out (away from the
+    //     wall on the wrong side), not back into the chamber — leading to
+    //     the "ball stuck behind the goal" failure mode. Clamp + bounce
+    //     here is a per-step safety net that activates only when the ball
+    //     is in the goal-mouth y-band; the soft pull-back force handles the
+    //     normal-speed case before this triggers.
+    if (in_goal_band) {
+        const float r       = cfg_.dynamics_params.radius;
+        const float max_px  =  (xh + gx) - r;
+        const float min_px  = -(xh + gx) + r;
+        const float restit  = cfg_.dynamics_params.restitution;
+        if (state_[::ball::PX] > max_px) {
+            state_[::ball::PX] = max_px;
+            if (state_[::ball::VX] > 0.0f) state_[::ball::VX] = -restit * state_[::ball::VX];
+        } else if (state_[::ball::PX] < min_px) {
+            state_[::ball::PX] = min_px;
+            if (state_[::ball::VX] < 0.0f) state_[::ball::VX] = -restit * state_[::ball::VX];
+        }
+    }
 
     // 4. Push pose AND velocity to Box2D, both scaled. Velocity matters for
     //    Box2D's broad-phase swept AABB expansion.

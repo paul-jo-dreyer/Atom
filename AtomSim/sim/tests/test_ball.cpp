@@ -10,6 +10,10 @@ TEST_CASE("Ball: free flight in bounds matches closed-form damping") {
     // Disable field pull-back so we measure pure exponential decay. (Without
     // this, the ball at v=1 with damping=0.5 reaches x = field_x_half at
     // t ≈ 0.42 s and the field force corrupts the result.)
+    //
+    // Y-offset above the goal mouth — and above the goal-top wall by at
+    // least one ball radius (default 0.05) — so the ball doesn't graze the
+    // chamber's top edge when it travels past x = field_x_half.
     sim::World world{};
     sim::BallConfig cfg;
     cfg.dynamics_params.damping = 0.5f;
@@ -17,7 +21,7 @@ TEST_CASE("Ball: free flight in bounds matches closed-form damping") {
     sim::Ball ball(world, cfg);
 
     ::ball::State<float> s;
-    s << 0.0f, 0.0f, 1.0f, 0.0f;
+    s << 0.0f, 0.15f, 1.0f, 0.0f;
     ball.set_state(s);
 
     const float dt = 0.01f;
@@ -37,6 +41,11 @@ TEST_CASE("Ball: field pull-back keeps ball from leaving the field") {
     // the boundary, overshoots a little, oscillates with rapidly decaying
     // amplitude, settles back inside. This is the regime we want for
     // training: smooth, bounded, never terminates.
+    //
+    // Y-offset above the goal mouth (and above the goal chamber's top wall
+    // by at least one ball radius) so the pull-back force is what arrests
+    // the ball — at y=0 it would simply enter the goal chamber and hit the
+    // back wall, which isn't the dynamic this test verifies.
     sim::World world{};
     sim::BallConfig cfg;
     cfg.dynamics_params.damping     = 1.0f;
@@ -45,7 +54,7 @@ TEST_CASE("Ball: field pull-back keeps ball from leaving the field") {
     sim::Ball ball(world, cfg);
 
     ::ball::State<float> s;
-    s << 0.0f, 0.0f, 3.0f, 0.0f;
+    s << 0.0f, 0.15f, 3.0f, 0.0f;
     ball.set_state(s);
 
     const float dt = 0.005f;

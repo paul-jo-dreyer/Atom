@@ -4,14 +4,16 @@
 
 #include <box2d/box2d.h>
 
-#include <array>
+#include <vector>
 
 namespace sim {
 
-// Owns the Box2D world plus the four field-boundary walls. Walls are static
-// b2_segmentShape bodies with category=CATEGORY_WALL, mask=MASK_WALL — by
-// design the ball's mask excludes them, so the ball never registers wall
-// contacts. Robots collide with walls normally.
+// Owns the Box2D world plus the field walls. Field-perimeter walls are
+// CATEGORY_WALL (ball passes through them, kept in by Ball's soft pull-back
+// force). When goals are enabled (goal_y_half > 0 && goal_extension > 0) the
+// left and right field walls are split around a gap, and three CATEGORY_
+// GOAL_WALL segments bound a chamber behind each opening — the ball collides
+// with these so it can't escape past the back of the goal.
 class World {
 public:
     explicit World(const WorldConfig& cfg = {});
@@ -28,16 +30,16 @@ public:
     const WorldConfig& config()   const { return config_; }
     b2WorldId          world_id() const { return world_id_; }
 
-    // The four wall body IDs (left, right, bottom, top), exposed for tests
-    // and debugging. They live for the lifetime of the World.
-    const std::array<b2BodyId, 4>& wall_bodies() const { return walls_; }
+    // All wall body IDs, in the order they were created. Exposed for tests
+    // and debugging. Lifetime is tied to the World.
+    const std::vector<b2BodyId>& wall_bodies() const { return walls_; }
 
 private:
     void create_walls();
 
-    WorldConfig             config_;
-    b2WorldId               world_id_;
-    std::array<b2BodyId, 4> walls_{};
+    WorldConfig            config_;
+    b2WorldId              world_id_;
+    std::vector<b2BodyId>  walls_{};
 };
 
 }  // namespace sim
