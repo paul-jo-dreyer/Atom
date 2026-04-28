@@ -19,7 +19,10 @@ analysis = [
     "matplotlib>=3.10.9",
 ]
 viz = [
+    "imageio>=2.34.0",
+    "imageio-ffmpeg>=0.5.1",
     "pygame>=2.6.0",
+    "pyyaml>=6.0.2",
 ]
 dev = [
     "nbstripout>=0.9.1",

@@ -1,0 +1,54 @@
+# AtomSim renderer style — colors, shapes, resolution.
+#
+# Colors are "#RRGGBB" hex strings. Resolutions are [width, height] in pixels.
+# Lengths in metres unless otherwise stated.
+#
+# This file is the default style for live teleop and headless export. Copy
+# and tweak it (e.g. configs/styles/analysis.yaml for points-on-a-grid).
+
+resolution:
+  render: [1280, 720]      # internal raster size — what the renderer actually draws to
+  output: [1280, 720]      # output size (live: window size; headless: video frame size)
+  # Note: keep both width and height divisible by 16 for clean H.264 mp4 encoding.
+
+field:
+  background: "#FAFAFA"    # off-white
+  walls: "#3C3C3C"         # near-black field border
+  walls_width_px: 3
+
+# Default style for any robot whose `team` key is null or unknown.
+# Per-team overrides go under `teams:` below.
+robot:
+  shape: full              # full | square_only | point
+  body_color: "#A5B4E6"
+  manipulator_color: "#EBA55A"
+  body_outline_color: "#282859"
+  manipulator_outline_color: "#8C5523"
+  show_axes: true          # red x-axis (forward) + green y-axis (left), drawn from body origin
+  axes_length_m: 0.04
+  axes_width_px: 2
+  point_radius_px: 6       # circle radius when shape == "point"
+
+ball:
+  shape: circle            # circle | point
+  color: "#DC4646"
+  outline_color: "#8C2323"
+  point_radius_px: 4
+
+# Per-team color overrides. A robot whose `team` field matches one of these
+# keys uses these colors instead of the defaults above. All four override
+# fields are optional — omit a field to inherit the default.
+teams:
+  blue:
+    body_color: "#3B82F6"
+    manipulator_color: "#1E40AF"
+    body_outline_color: "#1E3A8A"
+    manipulator_outline_color: "#0F2257"
+  orange:
+    body_color: "#F97316"
+    manipulator_color: "#C2410C"
+    body_outline_color: "#7C2D12"
+    manipulator_outline_color: "#431407"
+
+show_hud: true             # only honored by the live renderer
+hud_color: "#1E1E1E"

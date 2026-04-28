@@ -1,29 +1,34 @@
 """
-Real-time teleop: drive the robot with the keyboard, watch it interact with
-a ball in the simulated field. Self-locating — run from anywhere:
+Real-time teleop: drive the robot with the keyboard (and optionally a
+gamepad), watch it interact with a ball in the simulated field.
 
-    .venv/bin/python AtomSim/sim/python/teleop.py
+Usage:
+    .venv/bin/python AtomSim/sim/python/teleop.py [--record [PATH]]
 
-Requires the release build of sim_py and the `viz` dep group (pygame):
+Requires the release build of sim_py and the `viz` dep group:
 
     cmake --preset release && cmake --build build/release   # from AtomSim/
     uv sync --group viz                                     # from repo root
 
 Controls:
-    W / ↑    — both wheels forward (drive)
-    S / ↓    — both wheels reverse
-    A / ←    — turn CCW (left)
-    D / →    — turn CW (right)
-    R        — reset robot + ball to initial poses
-    ESC / Q  — quit
+    Keyboard    W / ↑    drive forward          A / ←   turn CCW (left)
+                S / ↓    drive reverse          D / →   turn CW  (right)
+                R        reset                  ESC/Q   quit
+    Gamepad     Left stick    drive (Y) + turn (X) — analog
+                A button (0)  reset
+                Back  (6)     quit
 
-Combinations work the way you'd expect: W+A drives forward while turning left,
-S+D reverses while turning right (banks out the back).
+If a gamepad is detected, both keyboard and gamepad are active simultaneously
+(signals are summed and clipped). Otherwise keyboard-only.
 
-Internally the sim runs at 60 Hz with dt = 1/60 s. The diff_drive motor lag
-(τ ≈ 50 ms) is well-resolved at this rate; RK4 has ample headroom.
+If --record is passed, every frame is captured into an Episode and saved
+on quit. Re-render the saved .npz with `render_episode.py` for a video.
 """
 
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
 import json
 import os
 import sys
@@ -31,12 +36,11 @@ from pathlib import Path
 
 import numpy as np
 
-# Suppress the pygame splash before importing it.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
 
-# --- Locate the AtomSim build and import the sim bindings -------------------
+# --- Locate AtomSim and import sim bindings ---------------------------------
 
 
 def _find_atomsim_root() -> Path:
@@ -55,148 +59,61 @@ if not _build_dir.exists():
         f"From {_atomsim}, run: cmake --preset release && cmake --build build/release"
     )
 sys.path.insert(0, str(_build_dir))
+sys.path.insert(0, str(_atomsim / "sim" / "python"))
 
 import sim_py  # noqa: E402
 
-
-# --- Render config ----------------------------------------------------------
-
-WINDOW_W, WINDOW_H = 1100, 720
-SCALE_PX_PER_M = 1100  # field 0.75 m → 825 px wide, fits comfortably
-
-BG_COLOR = (250, 250, 250)
-FIELD_BORDER_COLOR = (60, 60, 60)
-ROBOT_FILL_COLOR = (165, 180, 230)
-ROBOT_OUTLINE_COLOR = (40, 40, 90)
-MANIP_FILL_COLOR = (235, 165, 90)
-MANIP_OUTLINE_COLOR = (140, 85, 35)
-BALL_FILL_COLOR = (220, 70, 70)
-BALL_OUTLINE_COLOR = (140, 35, 35)
-HUD_COLOR = (30, 30, 30)
-
-
-def world_to_screen(x: float, y: float) -> tuple[int, int]:
-    """World metres (origin at field centre, +y = up) → window pixels."""
-    return (
-        int(WINDOW_W / 2 + x * SCALE_PX_PER_M),
-        int(WINDOW_H / 2 - y * SCALE_PX_PER_M),
-    )
-
-
-def m_to_px(d: float) -> int:
-    return max(1, int(d * SCALE_PX_PER_M))
-
-
-def _rotate_translate(
-    pt: tuple[float, float], theta: float, ox: float, oy: float
-) -> tuple[float, float]:
-    c, s = np.cos(theta), np.sin(theta)
-    return (ox + c * pt[0] - s * pt[1], oy + s * pt[0] + c * pt[1])
-
-
-# --- Drawing primitives -----------------------------------------------------
-
-
-def draw_field(surf, world):
-    cfg = world.config
-    xh, yh = cfg.field_x_half, cfg.field_y_half
-    tl = world_to_screen(-xh, yh)
-    br = world_to_screen(xh, -yh)
-    rect = pygame.Rect(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1])
-    pygame.draw.rect(surf, FIELD_BORDER_COLOR, rect, width=3)
-
-
-def draw_robot(surf, robot):
-    s = robot.state
-    px, py, theta = float(s[0]), float(s[1]), float(s[2])
-    cfg = robot.config
-
-    # Chassis: square centred at body origin
-    half = cfg.chassis_side * 0.5
-    chassis_local = [(-half, -half), (half, -half), (half, half), (-half, half)]
-    chassis_screen = [
-        world_to_screen(*_rotate_translate(p, theta, px, py)) for p in chassis_local
-    ]
-    pygame.draw.polygon(surf, ROBOT_FILL_COLOR, chassis_screen)
-    pygame.draw.polygon(surf, ROBOT_OUTLINE_COLOR, chassis_screen, width=2)
-
-    # Manipulator polygons (one or more parts)
-    for part in cfg.manipulator_parts:
-        part_screen = [
-            world_to_screen(
-                *_rotate_translate((float(v[0]), float(v[1])), theta, px, py)
-            )
-            for v in part
-        ]
-        if len(part_screen) >= 3:
-            pygame.draw.polygon(surf, MANIP_FILL_COLOR, part_screen)
-            pygame.draw.polygon(surf, MANIP_OUTLINE_COLOR, part_screen, width=2)
-
-    # Heading indicator: short line from centre out the front
-    nose_local = (cfg.chassis_side * 0.55, 0.0)
-    nose_world = _rotate_translate(nose_local, theta, px, py)
-    pygame.draw.line(
-        surf,
-        ROBOT_OUTLINE_COLOR,
-        world_to_screen(px, py),
-        world_to_screen(*nose_world),
-        2,
-    )
-
-
-def draw_ball(surf, ball):
-    s = ball.state
-    px, py = float(s[0]), float(s[1])
-    radius_px = m_to_px(ball.config.dynamics_params.radius)
-    pos = world_to_screen(px, py)
-    pygame.draw.circle(surf, BALL_FILL_COLOR, pos, radius_px)
-    pygame.draw.circle(surf, BALL_OUTLINE_COLOR, pos, radius_px, width=2)
-
-
-def draw_hud(surf, font, robot, ball, cmd):
-    s = robot.state
-    b = ball.state
-    lines = [
-        f"robot: x={float(s[0]):+.3f}  y={float(s[1]):+.3f}  θ={float(s[2]):+.3f}    v={float(s[3]):+.3f}  ω={float(s[4]):+.3f}",
-        f"ball:  x={float(b[0]):+.3f}  y={float(b[1]):+.3f}                      vx={float(b[2]):+.3f}  vy={float(b[3]):+.3f}",
-        f"cmd:   v_left={cmd[0]:+.2f}   v_right={cmd[1]:+.2f}",
-        "",
-        "WASD/↑↓←→ = drive   R = reset   ESC/Q = quit",
-    ]
-    for i, line in enumerate(lines):
-        surf.blit(font.render(line, True, HUD_COLOR), (12, 10 + i * 16))
+from viz import EpisodeRecorder, build_scene, load_style  # noqa: E402
+from viz.input import (  # noqa: E402
+    CompositeInput,
+    KeyboardInput,
+    detect_gamepad,
+    diff_drive_wheels_from_input,
+)
+from viz.renderers import PygameLiveRenderer  # noqa: E402
 
 
 # --- Config loading ---------------------------------------------------------
 
 
-def load_robot_config(name: str) -> sim_py.RobotConfig:
+def load_robot_config(name: str) -> tuple[sim_py.RobotConfig, list[list[list[float]]]]:
+    """Returns (RobotConfig, manipulator_parts_as_nested_list).
+
+    The nested list copy is used for the episode meta blob — sim_py's polygon
+    type is opaque to JSON, so we keep a plain Python view alongside it."""
     cfg_dir = _atomsim / "sim" / "configs"
     data = json.loads((cfg_dir / "robots" / f"{name}.json").read_text())
     cfg = sim_py.RobotConfig()
-    cfg.chassis_side = float(data.get("chassis_side", 0.10))
+    cfg.chassis_side = float(data.get("chassis_side", 0.060))
+    parts: list[list[list[float]]] = []
     if "manipulator" in data:
         m_data = json.loads(
             (cfg_dir / "manipulators" / f"{data['manipulator']}.json").read_text()
         )
+        parts = [[[float(v[0]), float(v[1])] for v in part] for part in m_data["parts"]]
         cfg.manipulator_parts = [
             [(float(v[0]), float(v[1])) for v in part] for part in m_data["parts"]
         ]
-    return cfg
+    return cfg, parts
 
 
 # --- Main loop --------------------------------------------------------------
 
 
 def main() -> None:
-    pygame.init()
-    pygame.display.set_caption("AtomSim teleop — WASD/arrows to drive, ESC to quit")
-    surf = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont("monospace", 14)
+    p = argparse.ArgumentParser(description="AtomSim real-time teleop")
+    p.add_argument(
+        "--record",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Record an episode and save to PATH on quit. With no PATH, "
+             "auto-names episode_YYYYMMDD_HHMMSS.npz in the current dir.",
+    )
+    args = p.parse_args()
 
     # --- sim setup ---
-    robot_cfg = load_robot_config("diff_drive_sidewall")
+    robot_cfg, manip_parts = load_robot_config("diff_drive_sidewall")
     robot_cfg.body_type = sim_py.BodyType.Dynamic
     robot_cfg.mass = 0.3
     robot_cfg.yaw_inertia = 5.0e-4
@@ -219,10 +136,54 @@ def main() -> None:
     robot = sim_py.Robot(world, robot_cfg)
     ball = sim_py.Ball(world, ball_cfg)
 
+    # --- renderer ---
+    style = load_style(_atomsim / "sim" / "configs" / "styles" / "default.yaml")
+    renderer = PygameLiveRenderer(
+        style,
+        title="AtomSim teleop — WASD/arrows or gamepad, ESC to quit",
+        field_x_half=world.config.field_x_half,
+        field_y_half=world.config.field_y_half,
+    )
+    clock = pygame.time.Clock()
+
+    # --- inputs ---
+    devices: list = [KeyboardInput()]
+    pad = detect_gamepad()
+    if pad is not None:
+        print(f"Gamepad detected: {pad.name}")
+        devices.append(pad)
+    inputs = CompositeInput(*devices)
+
     # --- control mapping ---
-    MAX_WHEEL_SPEED = 0.225  # m/s — caps wheel rim velocity at full key press
-    TURN_RATE_K = 0.4  # turn rate (rad/s) per unit of turn input; lower → more forward motion when turning
+    MAX_WHEEL_SPEED = 0.225
+    TURN_RATE_K = 0.4
     DT = 1.0 / 60.0
+
+    # --- episode recording (optional) ---
+    rec: EpisodeRecorder | None = None
+    if args.record is not None:
+        if args.record == "auto":
+            stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = Path.cwd() / f"episode_{stamp}.npz"
+        else:
+            out_path = Path(args.record)
+        rec = EpisodeRecorder(
+            dt=DT,
+            world={
+                "field_x_half": float(world.config.field_x_half),
+                "field_y_half": float(world.config.field_y_half),
+            },
+            agents=[
+                {"name": "blue", "type": "diff_drive", "team": "blue",
+                 "config": {
+                     "chassis_side": float(robot_cfg.chassis_side),
+                     "manipulator_parts": manip_parts,
+                 }},
+                {"name": "main", "type": "ball", "team": None,
+                 "config": {"radius": float(ball_cfg.dynamics_params.radius)}},
+            ],
+        )
+        print(f"Recording to {out_path}")
 
     def reset() -> None:
         rs = np.array(
@@ -232,28 +193,20 @@ def main() -> None:
         robot.set_state(rs)
         ball.set_state(bs)
 
+    sim_t = 0.0
     running = True
     while running:
-        # --- events ---
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                    running = False
-                elif event.key == pygame.K_r:
-                    reset()
+        events = pygame.event.get()
+        inp = inputs.poll(events)
+        if inp.quit:
+            running = False
+        if inp.reset:
+            reset()
+            sim_t = 0.0
 
-        # --- keyboard → wheel command ---
-        keys = pygame.key.get_pressed()
-        forward = (keys[pygame.K_w] or keys[pygame.K_UP]) - (
-            keys[pygame.K_s] or keys[pygame.K_DOWN]
+        v_left, v_right = diff_drive_wheels_from_input(
+            inp, max_wheel_speed=MAX_WHEEL_SPEED, turn_rate_k=TURN_RATE_K
         )
-        turn = (keys[pygame.K_a] or keys[pygame.K_LEFT]) - (
-            keys[pygame.K_d] or keys[pygame.K_RIGHT]
-        )
-        v_left = MAX_WHEEL_SPEED * (forward - turn * TURN_RATE_K)
-        v_right = MAX_WHEEL_SPEED * (forward + turn * TURN_RATE_K)
         cmd = np.array([v_left, v_right], dtype=np.float32)
 
         # --- step ---
@@ -262,18 +215,46 @@ def main() -> None:
         world.step(DT)
         robot.post_step()
         ball.post_step()
+        sim_t += DT
+
+        # --- record ---
+        norm_input = np.array([inp.forward, inp.turn], dtype=np.float32)
+        if rec is not None:
+            rec.append(
+                t=sim_t,
+                robot_states={"blue": np.array(robot.state, dtype=np.float32)},
+                robot_actions={"blue": cmd},
+                robot_inputs={"blue": norm_input},
+                ball_states={"main": np.array(ball.state, dtype=np.float32)},
+            )
 
         # --- render ---
-        surf.fill(BG_COLOR)
-        draw_field(surf, world)
-        draw_ball(surf, ball)
-        draw_robot(surf, robot)
-        draw_hud(surf, font, robot, ball, cmd)
-
-        pygame.display.flip()
+        scene = build_scene(
+            world, [("blue", robot)], [("main", ball)],
+            t=sim_t, teams={"blue": "blue"},
+        )
+        scene.controls = {"blue": (inp.forward, inp.turn)}
+        s, b = robot.state, ball.state
+        hud_lines = [
+            f"robot: x={float(s[0]):+.3f}  y={float(s[1]):+.3f}  θ={float(s[2]):+.3f}    "
+            f"v={float(s[3]):+.3f}  ω={float(s[4]):+.3f}",
+            f"ball:  x={float(b[0]):+.3f}  y={float(b[1]):+.3f}                      "
+            f"vx={float(b[2]):+.3f}  vy={float(b[3]):+.3f}",
+            f"input: fwd={inp.forward:+.2f}  turn={inp.turn:+.2f}    "
+            f"cmd: vL={cmd[0]:+.2f}  vR={cmd[1]:+.2f}",
+            f"t={sim_t:.2f}s" + ("  [REC]" if rec is not None else ""),
+            "",
+            "WASD/↑↓←→ = drive   R = reset   ESC/Q = quit",
+        ]
+        renderer.render(scene, hud_lines=hud_lines)
         clock.tick(60)
 
-    pygame.quit()
+    # --- finalize ---
+    if rec is not None and len(rec) > 0:
+        ep = rec.finalize()
+        ep.save(out_path)
+        print(f"Saved {ep.num_frames}-frame episode ({ep.num_frames * DT:.1f}s) to {out_path}")
+    renderer.close()
 
 
 if __name__ == "__main__":
