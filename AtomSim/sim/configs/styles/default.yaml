@@ -64,4 +64,4 @@ teams:
     manipulator_outline_color: "#431407"
 
 show_hud: true             # only honored by the live renderer
-hud_color: "#FFFFFF"       # readable on the green field
+hud_color: "#000000"       # readable on the green field

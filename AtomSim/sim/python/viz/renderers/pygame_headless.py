@@ -30,19 +30,26 @@ class PygameHeadlessRenderer:
         style: StyleConfig,
         field_x_half: float | None = None,
         field_y_half: float | None = None,
+        show_hud: bool = False,
     ) -> None:
+        """`show_hud` opts in to drawing the HUD strip (control panel + any
+        hud_lines passed to render()). Default is False — most exported
+        videos don't want a HUD overlay on top. Set True for tooling that
+        wants the live-style display (e.g. random-action demos)."""
         self.style = style
         if not pygame.font.get_init():
             pygame.font.init()
         self._render_surface = pygame.Surface(
             (style.resolution.render_w, style.resolution.render_h)
         )
+        hud_strip_px = 110 if (show_hud and style.show_hud) else 0
         self._drawer = PygameSceneDrawer(
             style,
             style.resolution.render_w,
             style.resolution.render_h,
             field_x_half,
             field_y_half,
+            hud_strip_px=hud_strip_px,
         )
 
     def render(
