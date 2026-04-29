@@ -81,7 +81,7 @@ class PygameSceneDrawer:
     # ---- coordinate helpers ----------------------------------------------
 
     def _compute_scale(self, x_half: float, y_half: float) -> float:
-        margin = 0.95
+        margin = 0.8
         avail_h = self._render_h - self._hud_strip_px
         sw = self._render_w * margin / (2.0 * x_half)
         sh = avail_h * margin / (2.0 * y_half)
@@ -107,7 +107,7 @@ class PygameSceneDrawer:
         so the white perimeter walls sit ON the turf rather than at its edge."""
         xh, yh = scene.field.x_half, scene.field.y_half
         buffer_x = 0.08
-        buffer_y = 0.01
+        buffer_y = 0.04
         x0, y0 = self._w2s(-xh - buffer_x, yh + buffer_y)
         xf, yf = self._w2s(xh + buffer_x, -yh - buffer_y)
         pygame.draw.rect(
