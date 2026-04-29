@@ -3,12 +3,31 @@
 Action and observation conventions match `AtomGym/action_observation.py` —
 the policy emits normalized (V, Ω); the env converts via anti-windup mixing.
 
-Reward is plug-in via a `RewardComposite` (from `AtomGym.rewards`). If none
-is supplied, every step's reward is 0.0 — the env still simulates correctly,
-just with no learning signal. The env detects ball-in-goal events (edge
-detection on the chamber bounds) and surfaces them as `info["scored_for_us"]`
-/ `info["scored_against_us"]` for reward terms to pick up. Goals also
-trigger `terminated=True` so episodes end as soon as the game is decided.
+Control vs physics rate
+-----------------------
+The sim integrator runs at `physics_dt`; the policy emits an action at
+`control_dt`. They can differ — `control_dt` must be an integer multiple
+of `physics_dt`, and that ratio is the action-repeat count. One call to
+`step()` holds the same action constant and ticks the physics
+`action_repeat` times, then returns one observation. Default is 1 — both
+rates equal — preserving the simple "one action ⟹ one physics step" loop.
+
+Goal scoring
+------------
+A goal is detected when the ENTIRE ball is past a goal line in x AND in
+the goal-mouth y-band — the same rule used in real soccer (the ball must
+fully cross the line). Edge-detected: `info["scored_for_us"]` /
+`info["scored_against_us"]` fires only on the rising edge.
+`terminated=True` on either event. Episodes truncate at
+`max_episode_steps` control steps (default 800).
+
+Rewards are plug-in via a list of `RewardTerm`s passed at construction.
+The env's `compute_reward(ctx)` iterates over them, weights, sums, and
+returns (total, breakdown). If no rewards are supplied, every step
+returns 0.0 — the sim still runs correctly, just with no learning signal.
+Reward is computed once per `step()` (i.e. per control tick), with
+`ctx.dt = control_dt` so reward terms can reason about the time elapsed
+between observations.
 
 `AtomSoloEnv` intentionally exposes its sim handles (`world`, `robot`,
 `ball`) so the visualization tools can build a SceneSpec from a live env
@@ -59,7 +78,8 @@ from AtomGym.action_observation import (  # noqa: E402
     action_to_wheel_cmds,
     build_observation,
 )
-from AtomGym.rewards import RewardComposite, RewardContext  # noqa: E402
+from AtomGym.environments.initial_state import InitialStateRanges  # noqa: E402
+from AtomGym.rewards import RewardContext, RewardTerm  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -86,18 +106,56 @@ class AtomSoloEnv(gym.Env):
     def __init__(
         self,
         *,
-        reward: RewardComposite | None = None,
-        dt: float = 1.0 / 60.0,
-        max_episode_steps: int = 1500,  # 25 s at 60 Hz
+        rewards: list[RewardTerm] | None = None,
+        init_state_ranges: InitialStateRanges | None = None,
+        physics_dt: float = 1.0 / 60.0,
+        control_dt: float | None = None,
+        max_episode_steps: int = 800,  # ≈13.3 s at 60 Hz control
         seed: int | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        physics_dt
+            Sim integrator timestep, seconds.
+        control_dt
+            Time between successive observations / actions, seconds. Must
+            be a positive integer multiple of `physics_dt`. `None` ⟹ same
+            as `physics_dt` (no action repeat).
+        max_episode_steps
+            Truncation limit, in CONTROL steps (i.e. calls to `step()`).
+        """
         super().__init__()
-        self.dt = dt
+        if physics_dt <= 0.0:
+            raise ValueError(f"physics_dt must be > 0, got {physics_dt}")
+        if control_dt is None:
+            control_dt = physics_dt
+        ratio = control_dt / physics_dt
+        action_repeat = int(round(ratio))
+        if action_repeat < 1 or abs(action_repeat - ratio) > 1e-6:
+            raise ValueError(
+                f"control_dt ({control_dt}) must be a positive integer multiple "
+                f"of physics_dt ({physics_dt}); got ratio {ratio}"
+            )
+        self.physics_dt = physics_dt
+        self.control_dt = control_dt
+        self.action_repeat = action_repeat
         self.max_episode_steps = max_episode_steps
 
-        # Reward composite. None ⟹ zero reward every step (sim still runs
-        # correctly; you just don't get a learning signal).
-        self._reward = reward if reward is not None else RewardComposite()
+        # Reward terms applied each step. Public list — mutate freely
+        # (e.g. for curriculum stage changes mid-training); `compute_reward`
+        # walks this list on each call. Empty list ⟹ zero reward (sim
+        # still runs correctly; you just don't get a learning signal).
+        self.reward_terms: list[RewardTerm] = (
+            list(rewards) if rewards is not None else []
+        )
+
+        # Per-reset domain-randomization ranges. Public — reassign to swap
+        # DR config mid-training (curriculum stage transitions). Defaults
+        # produce random pose with zero initial velocities.
+        self.init_state_ranges: InitialStateRanges = (
+            init_state_ranges if init_state_ranges is not None else InitialStateRanges()
+        )
 
         # Schema views: instantiate once, pass arrays into the methods. Exposed
         # as public attributes so reward functions / callbacks / tests can reuse
@@ -149,21 +207,31 @@ class AtomSoloEnv(gym.Env):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        # Randomize robot pose and ball position within a margin of the field
-        # bounds so neither spawns inside a goal chamber or against a wall.
-        margin = 0.04
-        x_lim = self.field_x_half - margin
-        y_lim = self.field_y_half - margin
+        r = self.init_state_ranges
 
-        rx = float(self._rng.uniform(-x_lim, x_lim))
-        ry = float(self._rng.uniform(-y_lim, y_lim))
-        rt = float(self._rng.uniform(-np.pi, np.pi))
+        # Robot pose: uniform inside the field with a margin on each side.
+        rx_lim = max(0.0, self.field_x_half - r.robot_xy_margin)
+        ry_lim = max(0.0, self.field_y_half - r.robot_xy_margin)
+        rx = float(self._rng.uniform(-rx_lim, rx_lim)) if rx_lim > 0 else 0.0
+        ry = float(self._rng.uniform(-ry_lim, ry_lim)) if ry_lim > 0 else 0.0
+        rt = float(self._rng.uniform(*r.robot_theta))
+        # Body-frame longitudinal velocity and yaw rate.
+        rv = float(self._rng.uniform(*r.robot_speed))
+        romega = float(self._rng.uniform(*r.robot_omega))
 
-        bx = float(self._rng.uniform(-x_lim, x_lim))
-        by = float(self._rng.uniform(-y_lim, y_lim))
+        # Ball position: same margin idea.
+        bx_lim = max(0.0, self.field_x_half - r.ball_xy_margin)
+        by_lim = max(0.0, self.field_y_half - r.ball_xy_margin)
+        bx = float(self._rng.uniform(-bx_lim, bx_lim)) if bx_lim > 0 else 0.0
+        by = float(self._rng.uniform(-by_lim, by_lim)) if by_lim > 0 else 0.0
+        # Ball velocity in polar: speed × (cos θ, sin θ).
+        bspeed = float(self._rng.uniform(*r.ball_speed))
+        bdir = float(self._rng.uniform(*r.ball_direction))
+        bvx = bspeed * float(np.cos(bdir))
+        bvy = bspeed * float(np.sin(bdir))
 
-        self.robot.set_state(np.array([rx, ry, rt, 0.0, 0.0], dtype=np.float32))
-        self.ball.set_state(np.array([bx, by, 0.0, 0.0], dtype=np.float32))
+        self.robot.set_state(np.array([rx, ry, rt, rv, romega], dtype=np.float32))
+        self.ball.set_state(np.array([bx, by, bvx, bvy], dtype=np.float32))
 
         self._step_count = 0
         self._prev_obs = None
@@ -175,6 +243,8 @@ class AtomSoloEnv(gym.Env):
     def step(
         self, action: np.ndarray
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        # Decode the action ONCE per control step — the same wheel cmd is
+        # held constant across all `action_repeat` physics substeps.
         v_norm = self.action_view.v(action)
         omega_norm = self.action_view.omega(action)
         v_left, v_right = action_to_wheel_cmds(
@@ -185,18 +255,37 @@ class AtomSoloEnv(gym.Env):
         )
         wheel_cmd = np.array([v_left, v_right], dtype=np.float32)
 
-        self.robot.pre_step(wheel_cmd, self.dt)
-        self.ball.pre_step(self.dt)
-        self.world.step(self.dt)
-        self.robot.post_step()
-        self.ball.post_step()
+        # Accumulate event flags across substeps. A goal scored on substep
+        # k of N is OR'd in here and the loop early-exits — no point
+        # ticking the sim further into a finished episode.
+        accumulated: dict[str, Any] = {
+            "scored_for_us": False,
+            "scored_against_us": False,
+        }
+        for _ in range(self.action_repeat):
+            self.robot.pre_step(wheel_cmd, self.physics_dt)
+            self.ball.pre_step(self.physics_dt)
+            self.world.step(self.physics_dt)
+            self.robot.post_step()
+            self.ball.post_step()
 
-        self._step_count += 1
+            substep_info = self._detect_events()
+            terminal_this_substep = False
+            for key in ("scored_for_us", "scored_against_us"):
+                if substep_info.get(key, False):
+                    accumulated[key] = True
+                    terminal_this_substep = True
+            if terminal_this_substep:
+                break
+
+        self._step_count += 1  # one CONTROL step (not physics step).
 
         obs = self._build_obs()
-        info: dict[str, Any] = self._detect_events()
+        info: dict[str, Any] = accumulated
 
-        # Build the per-step context bundle and run the reward composite.
+        # Reward computed once per control step. ctx.dt = control_dt so
+        # reward terms see the time elapsed between observations, not the
+        # finer physics tick.
         ctx = RewardContext(
             obs=obs,
             action=np.asarray(action, dtype=np.float32),
@@ -209,9 +298,9 @@ class AtomSoloEnv(gym.Env):
             field_y_half=self.field_y_half,
             goal_y_half=self.goal_y_half,
             goal_extension=self.goal_extension,
-            dt=self.dt,
+            dt=self.control_dt,
         )
-        reward, breakdown = self._reward(ctx)
+        reward, breakdown = self.compute_reward(ctx)
         info["reward_breakdown"] = breakdown
 
         # Episode ends as soon as a goal goes in (either side). The env owns
@@ -231,20 +320,49 @@ class AtomSoloEnv(gym.Env):
         # sim_py owns the underlying Box2D world; lifetime is tied to GC.
         pass
 
+    # ---- reward ----------------------------------------------------------
+
+    def compute_reward(
+        self, ctx: RewardContext
+    ) -> tuple[float, dict[str, float]]:
+        """Walk `self.reward_terms`, weight each term's contribution, return
+        the total scalar reward AND the per-term breakdown dict.
+
+        The breakdown is keyed by term name and holds the WEIGHTED value
+        (i.e. `term.weight * term(ctx)`) — that's what makes its way into
+        `info["reward_breakdown"]` for TensorBoard logging. If two terms
+        share a name, their contributions are accumulated under that one
+        key (the total stays correct; the breakdown groups duplicates).
+
+        Pure with respect to the env: doesn't mutate `self`. Reward terms
+        are themselves stateless (read from `ctx`), so this method can be
+        called from the REPL or debug code with a hand-built context to
+        evaluate a composition against a saved scene.
+        """
+        breakdown: dict[str, float] = {}
+        for term in self.reward_terms:
+            contribution = term.weight * term(ctx)
+            breakdown[term.name] = breakdown.get(term.name, 0.0) + contribution
+        return float(sum(breakdown.values())), breakdown
+
     # ---- event detection ------------------------------------------------
 
     def _detect_events(self) -> dict[str, Any]:
-        """Edge-detect ball-in-goal-chamber transitions. Sets `scored_for_us`
-        on the rising edge of "ball center inside +x goal chamber",
-        `scored_against_us` on the rising edge of -x. Latches prevent the
-        same goal from registering on every step the ball sits in the
-        chamber."""
+        """Edge-detect ball-fully-past-goal-line transitions. The ball must
+        FULLY cross the goal line — the entire ball, not just its centre,
+        past x = ±field_x_half — and be in the goal-mouth y-band. This
+        matches real soccer's "ball wholly across the line" rule and
+        avoids spurious triggers from a centre-just-touching-line state.
+
+        Latches (`_ball_in_*_goal_prev`) prevent the same goal from firing
+        on every substep the ball sits in the chamber."""
         bx = float(self.ball.state[0])
         by = float(self.ball.state[1])
+        radius = self.ball_radius
         in_y_band = abs(by) <= self.goal_y_half
 
-        in_opp = in_y_band and (bx > self.field_x_half)
-        in_own = in_y_band and (bx < -self.field_x_half)
+        in_opp = in_y_band and (bx - radius > self.field_x_half)
+        in_own = in_y_band and (bx + radius < -self.field_x_half)
 
         info: dict[str, Any] = {
             "scored_for_us": in_opp and not self._ball_in_opp_goal_prev,
@@ -259,7 +377,11 @@ class AtomSoloEnv(gym.Env):
     @property
     def t(self) -> float:
         """Sim time elapsed in the current episode, seconds."""
-        return self._step_count * self.dt
+        return self._step_count * self.control_dt
+
+    @property
+    def ball_radius(self) -> float:
+        return float(self._ball_cfg.dynamics_params.radius)
 
     def _build_obs(self) -> np.ndarray:
         return build_observation(

@@ -118,7 +118,9 @@ class RewardComposite:
     The breakdown dict it returns alongside the total is the input we'd want
     to log to TensorBoard one-key-at-a-time, so each term's contribution is
     visible during training. Keys are term names; values are the WEIGHTED
-    contribution (i.e., `weight * term(ctx)`).
+    contribution (i.e., `weight * term(ctx)`). If two terms share a name,
+    their weighted contributions accumulate under the one key (so the total
+    is always correct; the breakdown just groups same-named terms).
     """
 
     terms: list[RewardTerm] = field(default_factory=list)
@@ -126,7 +128,8 @@ class RewardComposite:
     def __call__(self, ctx: RewardContext) -> tuple[float, dict[str, float]]:
         breakdown: dict[str, float] = {}
         for term in self.terms:
-            breakdown[term.name] = term.weight * term(ctx)
+            contribution = term.weight * term(ctx)
+            breakdown[term.name] = breakdown.get(term.name, 0.0) + contribution
         total = float(sum(breakdown.values()))
         return total, breakdown
 

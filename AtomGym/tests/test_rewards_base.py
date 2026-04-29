@@ -160,6 +160,23 @@ def test_composite_term_can_read_info() -> None:
     assert total_on == pytest.approx(1.0)
 
 
+def test_composite_duplicate_names_accumulate() -> None:
+    """If two terms share a name, contributions accumulate under the one key
+    rather than the last-wins clobbering. Total stays correct; breakdown
+    groups them together."""
+    composite = RewardComposite([
+        ConstantTerm("dup", 1.0),
+        ConstantTerm("dup", 3.0, weight=2.0),  # contributes 6.0
+        ConstantTerm("solo", 5.0),
+    ])
+    total, breakdown = composite(_make_ctx())
+    assert total == pytest.approx(12.0)  # 1 + 6 + 5
+    assert breakdown == {
+        "dup": pytest.approx(7.0),    # 1 + 6
+        "solo": pytest.approx(5.0),
+    }
+
+
 def test_composite_term_handles_no_prev_obs() -> None:
     """Reward terms must accept ctx.prev_obs is None on the first step."""
 
