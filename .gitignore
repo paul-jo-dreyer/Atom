@@ -6,6 +6,8 @@ __pycache__/
 .ipynb_checkpoints/
 .cache/.venv/
 
+training_runs/
+
 # LaTeX build artifacts (analysis/)
 # Core (every build)
 *.aux

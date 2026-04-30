@@ -159,6 +159,66 @@ void Robot::set_state(const diff_drive::State<float>& s) {
     }
 }
 
+std::vector<RobotContactPoint> Robot::contact_points() const {
+    std::vector<RobotContactPoint> out;
+    const int cap = b2Body_GetContactCapacity(body_id_);
+    if (cap == 0) return out;
+
+    // Box2D rarely produces more than ~4 simultaneous contacts on a single
+    // 2D body (chassis + a manipulator part touching one wall edge each).
+    // Keep the common case off the heap; fall through to a vector buffer
+    // only if the body has an unusually high contact capacity.
+    constexpr int kStackBudget = 16;
+    b2ContactData stack_buf[kStackBudget];
+    std::vector<b2ContactData> heap_buf;
+    b2ContactData* buf = stack_buf;
+    if (cap > kStackBudget) {
+        heap_buf.resize(static_cast<size_t>(cap));
+        buf = heap_buf.data();
+    }
+
+    const int n = b2Body_GetContactData(body_id_, buf, cap);
+    out.reserve(static_cast<size_t>(n) * 2);  // up to 2 manifold points per contact
+
+    for (int i = 0; i < n; ++i) {
+        const b2ContactData& cd = buf[i];
+        if (cd.manifold.pointCount == 0) continue;
+
+        // Box2D's manifold normal points from shape A to shape B. We want a
+        // consistent "force-on-us" convention (obstacle → robot), so detect
+        // which side we're on and flip when we're A.
+        const bool we_are_A =
+            B2_ID_EQUALS(b2Shape_GetBody(cd.shapeIdA), body_id_);
+        const b2ShapeId other_shape = we_are_A ? cd.shapeIdB : cd.shapeIdA;
+        const b2Filter  f           = b2Shape_GetFilter(other_shape);
+
+        const float sign = we_are_A ? -1.0f : 1.0f;
+        const float nx   = sign * cd.manifold.normal.x;
+        const float ny   = sign * cd.manifold.normal.y;
+
+        for (int p = 0; p < cd.manifold.pointCount; ++p) {
+            const b2ManifoldPoint& mp = cd.manifold.points[p];
+            // Skip speculative-only contact points that didn't actually
+            // exchange impulse this step. `totalNormalImpulse` is the field
+            // Box2D's docs recommend for "did an interaction happen".
+            if (mp.totalNormalImpulse == 0.0f) continue;
+
+            RobotContactPoint cp;
+            cp.other_category  = f.categoryBits;
+            cp.point_x         = mp.point.x          / kBox2dScale;
+            cp.point_y         = mp.point.y          / kBox2dScale;
+            cp.normal_x        = nx;
+            cp.normal_y        = ny;
+            // Impulses scale by length, so divide once. (m·scale → m)
+            cp.normal_impulse  = mp.totalNormalImpulse / kBox2dScale;
+            cp.tangent_impulse = mp.tangentImpulse     / kBox2dScale;
+            cp.separation      = mp.separation         / kBox2dScale;
+            out.push_back(cp);
+        }
+    }
+    return out;
+}
+
 void Robot::clamp_lateral_velocity() {
     const b2Vec2 v_world = b2Body_GetLinearVelocity(body_id_);
     const b2Rot  rot     = b2Body_GetRotation(body_id_);

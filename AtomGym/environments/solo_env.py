@@ -40,7 +40,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import gymnasium as gym
 import numpy as np
@@ -80,6 +80,34 @@ from AtomGym.action_observation import (  # noqa: E402
 )
 from AtomGym.environments.initial_state import InitialStateRanges  # noqa: E402
 from AtomGym.rewards import RewardContext, RewardTerm  # noqa: E402
+
+
+# "Obstacle" = anything that isn't the ball. Walls, goal-walls, and (in
+# multi-robot envs) other robots are all hostile contacts that should be
+# penalised. Reward terms read `info["robot_contacts"]` and mask each
+# contact's `other_category` against this; the env also pre-aggregates the
+# fraction-in-contact signal so simple terms don't have to walk the list.
+_OBSTACLE_CATEGORIES = (
+    sim_py.CATEGORY_WALL | sim_py.CATEGORY_GOAL_WALL | sim_py.CATEGORY_ROBOT
+)
+
+
+class ContactRecord(NamedTuple):
+    """Pickleable mirror of `sim_py.RobotContactPoint`. Pybind11 classes
+    aren't pickle-friendly, but SB3's DummyVecEnv `deepcopy`s every info
+    dict and SubprocVecEnv pickles them for IPC, so we copy the C++ struct
+    into a plain Python NamedTuple before pushing it through `info`. Field
+    names match the C++ struct so reward code reads either type the same
+    way."""
+
+    other_category: int
+    point_x: float
+    point_y: float
+    normal_x: float
+    normal_y: float
+    normal_impulse: float
+    tangent_impulse: float
+    separation: float
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +290,45 @@ class AtomSoloEnv(gym.Env):
             "scored_for_us": False,
             "scored_against_us": False,
         }
+        # Contact accumulators: a flat list of every RobotContactPoint Box2D
+        # reported across all substeps in this control step. Reward terms
+        # that scale by impulse magnitude can sum directly over this list;
+        # `obstacle_contact_substeps` powers the simple "fraction in
+        # contact" signal without forcing every reward to re-walk the list.
+        all_contacts: list[Any] = []
+        obstacle_contact_substeps = 0
+        n_substeps_run = 0
         for _ in range(self.action_repeat):
             self.robot.pre_step(wheel_cmd, self.physics_dt)
             self.ball.pre_step(self.physics_dt)
             self.world.step(self.physics_dt)
             self.robot.post_step()
             self.ball.post_step()
+            n_substeps_run += 1
+
+            # Snapshot contacts AFTER post_step. Box2D's contact data
+            # reflects the impulse the solver just applied, so we get the
+            # impulse for this substep specifically. Across the action_
+            # repeat loop, list grows; track whether each substep had at
+            # least one obstacle contact so we can return a fraction.
+            #
+            # Convert the C++ structs to ContactRecord NamedTuples here
+            # because SB3's vec envs deepcopy/pickle info dicts and
+            # pybind11 classes don't play with either.
+            substep_contacts = self.robot.contact_points()
+            if substep_contacts:
+                substep_had_obstacle = False
+                for c in substep_contacts:
+                    all_contacts.append(ContactRecord(
+                        c.other_category,
+                        c.point_x, c.point_y,
+                        c.normal_x, c.normal_y,
+                        c.normal_impulse, c.tangent_impulse, c.separation,
+                    ))
+                    if c.other_category & _OBSTACLE_CATEGORIES:
+                        substep_had_obstacle = True
+                if substep_had_obstacle:
+                    obstacle_contact_substeps += 1
 
             substep_info = self._detect_events()
             terminal_this_substep = False
@@ -282,6 +343,12 @@ class AtomSoloEnv(gym.Env):
 
         obs = self._build_obs()
         info: dict[str, Any] = accumulated
+        # Divide by substeps actually run (early-exit on goal can leave
+        # n_substeps_run < action_repeat).
+        info["robot_contacts"] = all_contacts
+        info["obstacle_contact_frac"] = (
+            obstacle_contact_substeps / n_substeps_run if n_substeps_run > 0 else 0.0
+        )
 
         # Reward computed once per control step. ctx.dt = control_dt so
         # reward terms see the time elapsed between observations, not the

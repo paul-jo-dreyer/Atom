@@ -54,6 +54,8 @@ from AtomGym.rewards import (  # noqa: E402
     BallProgressReward,
     DistanceToBallReward,
     GoalScoredReward,
+    ObstacleContactPenalty,
+    StallPenaltyReward,
 )
 from AtomGym.training.gif_eval_callback import GifEvalCallback  # noqa: E402
 
@@ -66,16 +68,29 @@ from AtomGym.training.gif_eval_callback import GifEvalCallback  # noqa: E402
 def make_l1_env(
     seed: int = 0,
     max_episode_steps: int = 400,
+    stall_penalty: float = 0.3,
+    obstacle_contact_penalty: float = 0.5,
 ) -> AtomSoloEnv:
     """Construct a Level-1 env with the agreed reward composition and a
     light initial-state DR config. Edit here for first-pass tuning."""
-    rewards = [
+    rewards: list = [
         # Dense shaping: reward speed-toward-goal and proximity-to-ball.
         BallProgressReward(weight=1.0),       # ~ m/s of ball progress toward +x goal
         DistanceToBallReward(weight=-0.5),    # negative ⟹ closer = better
         # Sparse terminal: large ± reward on a goal.
         GoalScoredReward(weight=50.0),
     ]
+    if stall_penalty > 0.0:
+        # Push back on the "do nothing" attractor that PPO falls into
+        # early in training. Negative weight ⟹ small per-step penalty
+        # whenever the action is near (0, 0).
+        rewards.append(StallPenaltyReward(weight=-stall_penalty))
+    if obstacle_contact_penalty > 0.0:
+        # Counter the failure mode the stall-penalty introduces: a robot
+        # pinned to a wall has zero motion but is "doing something" (full
+        # throttle into the wall), so stall-penalty doesn't punish it.
+        # Penalise time spent in obstacle contact instead.
+        rewards.append(ObstacleContactPenalty(weight=-obstacle_contact_penalty))
     init_ranges = InitialStateRanges(
         # Default: random pose, zero velocities. Once the policy can score
         # from a stationary ball, broaden the velocity ranges to make the
@@ -92,7 +107,12 @@ def make_l1_env(
 
 
 def make_vec_env(
-    n_envs: int, base_seed: int, use_subproc: bool, max_episode_steps: int
+    n_envs: int,
+    base_seed: int,
+    use_subproc: bool,
+    max_episode_steps: int,
+    stall_penalty: float,
+    obstacle_contact_penalty: float,
 ) -> VecEnv:
     # Wrap each env in SB3's Monitor so PPO can log rollout/ep_rew_mean and
     # rollout/ep_len_mean (it pulls those from `info["episode"]` which Monitor
@@ -102,7 +122,12 @@ def make_vec_env(
     factories = [
         (
             lambda i=i: Monitor(
-                make_l1_env(seed=base_seed + i, max_episode_steps=max_episode_steps)
+                make_l1_env(
+                    seed=base_seed + i,
+                    max_episode_steps=max_episode_steps,
+                    stall_penalty=stall_penalty,
+                    obstacle_contact_penalty=obstacle_contact_penalty,
+                )
             )
         )
         for i in range(n_envs)
@@ -191,6 +216,14 @@ def main() -> None:
         help="PPO rollout length per env. SB3 default 2048; lower if memory tight.",
     )
     parser.add_argument(
+        "--batch-size", type=int, default=64,
+        help="PPO minibatch size for the update. SB3 default 64. With small "
+             "MLPs the per-minibatch Python/PyTorch overhead dominates the "
+             "actual matmul, so the update phase is *much* faster at 512-2048 "
+             "even though the number of gradient steps drops. Ensure n_envs * "
+             "n_steps is divisible by batch_size.",
+    )
+    parser.add_argument(
         "--max-episode-steps", type=int, default=400,
         help="Episode truncation length, in CONTROL steps. At control_dt=1/30s, "
              "400 steps ≈ 13.3 s of sim time per episode. Lower = more episode "
@@ -208,6 +241,24 @@ def main() -> None:
         help="Initial log-std of the Gaussian action distribution. SB3 default 0.0 "
              "⟹ initial std=1.0. Bump to 0.3-0.5 (std ≈ 1.35-1.65) to widen the "
              "starting distribution and increase initial exploration.",
+    )
+    parser.add_argument(
+        "--stall-penalty", type=float, default=0.3,
+        help="Weight (positive magnitude) on the stall-penalty reward term — "
+             "a per-step nudge away from near-zero (V, Ω) actions. The term "
+             "internally uses NEGATIVE this value as its weight. Set to 0 to "
+             "disable. Larger ⟹ stronger push to keep moving; if the policy "
+             "ends up spamming high-magnitude actions even when wrong, dial down.",
+    )
+    parser.add_argument(
+        "--obstacle-contact-penalty", type=float, default=0.5,
+        help="Weight (positive magnitude) on the obstacle-contact reward "
+             "term — penalises fraction of the control step spent touching "
+             "anything that isn't the ball (walls, goal-walls, other robots). "
+             "Counters the wall-pinning failure mode the stall penalty can "
+             "induce. Set to 0 to disable. Larger ⟹ stronger push away from "
+             "walls; signal is bounded in [0, 1] so weight is comparable to "
+             "the stall penalty per second of contact.",
     )
     parser.add_argument(
         "--checkpoint-every", type=int, default=50_000,
@@ -256,7 +307,12 @@ def main() -> None:
 
     # Vec env
     vec_env = make_vec_env(
-        args.n_envs, args.seed, args.use_subproc, args.max_episode_steps
+        args.n_envs,
+        args.seed,
+        args.use_subproc,
+        args.max_episode_steps,
+        args.stall_penalty,
+        args.obstacle_contact_penalty,
     )
 
     # PPO with 2x128 MLP for both policy and value heads.
@@ -274,7 +330,7 @@ def main() -> None:
         policy_kwargs=policy_kwargs,
         learning_rate=args.learning_rate,
         n_steps=args.n_steps,
-        batch_size=64,
+        batch_size=args.batch_size,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
@@ -305,6 +361,8 @@ def main() -> None:
                 eval_env_factory=lambda: make_l1_env(
                     seed=args.render_eval_seed,
                     max_episode_steps=args.max_episode_steps,
+                    stall_penalty=args.stall_penalty,
+                    obstacle_contact_penalty=args.obstacle_contact_penalty,
                 ),
                 render_every=args.render_every,
                 save_dir=gif_dir,
@@ -324,6 +382,14 @@ def main() -> None:
     print(f"[train] policy net    : 2x128 MLP")
     print(f"[train] episode steps : {args.max_episode_steps}")
     print(f"[train] exploration   : ent_coef={args.ent_coef}  log_std_init={args.log_std_init}")
+    if args.stall_penalty > 0:
+        print(f"[train] stall penalty : weight=-{args.stall_penalty}")
+    else:
+        print(f"[train] stall penalty : disabled")
+    if args.obstacle_contact_penalty > 0:
+        print(f"[train] obstacle pen. : weight=-{args.obstacle_contact_penalty}")
+    else:
+        print(f"[train] obstacle pen. : disabled")
     print(f"[train] checkpoints   : every {args.checkpoint_every:,} steps → {ckpt_dir}")
     if args.render_every is not None:
         rows, cols = args.render_grid

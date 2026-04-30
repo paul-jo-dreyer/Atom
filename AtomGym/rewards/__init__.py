@@ -9,12 +9,16 @@ from ._base_reward import RewardComposite, RewardContext, RewardTerm
 from .ball_progress import BallProgressReward
 from .distance_to_ball import DistanceToBallReward
 from .goal_scored import GoalScoredReward
+from .obstacle_contact import ObstacleContactPenalty
+from .stall_penalty import StallPenaltyReward
 
 __all__ = [
     "BallProgressReward",
     "DistanceToBallReward",
     "GoalScoredReward",
+    "ObstacleContactPenalty",
     "RewardComposite",
     "RewardContext",
     "RewardTerm",
+    "StallPenaltyReward",
 ]

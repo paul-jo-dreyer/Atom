@@ -8,7 +8,36 @@
 
 #include <box2d/box2d.h>
 
+#include <cstdint>
+#include <vector>
+
 namespace sim {
+
+// Snapshot of a single contact point on the robot's body. Returned by
+// `Robot::contact_points()`. Coordinates and impulses are in physical units
+// (metres, N·s) — the Box2D-side `kBox2dScale` factor has already been
+// reversed. The `normal` vector follows a force-on-us convention: it points
+// from the obstacle TOWARD the robot, so `normal * (normal_impulse / dt)`
+// is the world-frame force vector applied to the robot.
+//
+// `normal_impulse` uses Box2D's `totalNormalImpulse`, which accumulates over
+// all internal TGS substeps + restitution within one `World::step` call.
+// This is the field Box2D's own docs recommend for "did an interaction
+// actually happen this step", and is what reward terms should scale on.
+//
+// `other_category` is the bitmask of CATEGORY_* bits identifying what the
+// other shape is (wall, robot, ball, goal-wall). A single contact will have
+// exactly one bit set; reward code can mask against any combination.
+struct RobotContactPoint {
+    uint64_t other_category = 0;     // CATEGORY_* bitmask of the other shape
+    float    point_x        = 0.0f;  // world-frame metres
+    float    point_y        = 0.0f;
+    float    normal_x       = 0.0f;  // unit vector, points obstacle → robot
+    float    normal_y       = 0.0f;
+    float    normal_impulse = 0.0f;  // N·s, totalNormalImpulse, last World::step
+    float    tangent_impulse = 0.0f; // N·s, friction component along surface
+    float    separation     = 0.0f;  // metres; negative ⟹ penetrating
+};
 
 // A diff-drive robot in the simulated world. Composes
 // `diff_drive::DiffDriveDynamics` + a Box2D body with a square chassis and
@@ -65,6 +94,19 @@ public:
     b2BodyId body_id()   const { return body_id_; }
 
     const RobotConfig& config() const { return cfg_; }
+
+    // Snapshot the contacts present on the robot's Box2D body at the moment
+    // of call. Reflects whatever Box2D resolved during the most recent
+    // `World::step`, so the canonical call site is AFTER `world.step(dt)`
+    // (after `post_step()` is fine too — neither mutates contact state).
+    //
+    // Returns one entry per ManifoldPoint per active manifold; a chassis
+    // wedged in a corner can produce up to ~4 entries. Speculative contact
+    // points (`totalNormalImpulse == 0`) are filtered out — the returned
+    // list contains only points where Box2D actually applied an impulse.
+    //
+    // Empty vector ⟹ no contacts this step.
+    std::vector<RobotContactPoint> contact_points() const;
 
 private:
     void create_body(World& world);

@@ -32,6 +32,26 @@ PYBIND11_MODULE(sim_py, m) {
         .value("Kinematic", sim::BodyType::Kinematic)
         .value("Dynamic",   sim::BodyType::Dynamic);
 
+    // --- collision-filter category bits (module-level constants) ---
+    // Exposed as ints so Python reward code can mask `RobotContactPoint.
+    // other_category` without hard-coded magic numbers. These mirror the
+    // values in `sim/types.hpp` exactly.
+    m.attr("CATEGORY_WALL")      = py::int_(sim::CATEGORY_WALL);
+    m.attr("CATEGORY_ROBOT")     = py::int_(sim::CATEGORY_ROBOT);
+    m.attr("CATEGORY_BALL")      = py::int_(sim::CATEGORY_BALL);
+    m.attr("CATEGORY_GOAL_WALL") = py::int_(sim::CATEGORY_GOAL_WALL);
+
+    // --- contact-point snapshot ---
+    py::class_<sim::RobotContactPoint>(m, "RobotContactPoint")
+        .def_readonly("other_category",  &sim::RobotContactPoint::other_category)
+        .def_readonly("point_x",         &sim::RobotContactPoint::point_x)
+        .def_readonly("point_y",         &sim::RobotContactPoint::point_y)
+        .def_readonly("normal_x",        &sim::RobotContactPoint::normal_x)
+        .def_readonly("normal_y",        &sim::RobotContactPoint::normal_y)
+        .def_readonly("normal_impulse",  &sim::RobotContactPoint::normal_impulse)
+        .def_readonly("tangent_impulse", &sim::RobotContactPoint::tangent_impulse)
+        .def_readonly("separation",      &sim::RobotContactPoint::separation);
+
     // --- configs ---
 
     py::class_<sim::WorldConfig>(m, "WorldConfig")
@@ -83,7 +103,8 @@ PYBIND11_MODULE(sim_py, m) {
         .def_property_readonly("state", &sim::Robot::state)
         .def_property_readonly("config", &sim::Robot::config,
                                py::return_value_policy::reference_internal)
-        .def_property_readonly("body_type", &sim::Robot::body_type);
+        .def_property_readonly("body_type", &sim::Robot::body_type)
+        .def("contact_points", &sim::Robot::contact_points);
 
     py::class_<sim::Ball>(m, "Ball")
         .def(py::init<sim::World&, const sim::BallConfig&>(),

@@ -129,6 +129,78 @@ TEST_CASE("Robot (dynamic) physically stops at a wall") {
     CHECK(std::abs(s[diff_drive::V]) < 1.0e-3f);             // came to rest
 }
 
+TEST_CASE("Robot (dynamic) reports wall contact via contact_points()") {
+    // Same scenario as "physically stops at a wall": drive straight into
+    // the upper-right field wall (y0=0.10 keeps us out of the goal mouth).
+    // Once the chassis is jammed, we expect at least one contact point
+    // tagged with CATEGORY_WALL, with non-zero normal impulse and a
+    // surface normal pointing roughly back along -x (force-on-us
+    // convention: the wall is shoving the robot in -x).
+    sim::World world{};
+    auto cfg = dynamic_default();
+    cfg.y0 = 0.10f;
+    sim::Robot robot(world, cfg);
+
+    diff_drive::Control<float> u;
+    u << 0.5f, 0.5f;  // both wheels forward → drive straight at the wall
+
+    const float dt = 0.01f;
+    for (int i = 0; i < 200; ++i) {
+        robot.pre_step(u, dt);
+        world.step(dt);
+        robot.post_step();
+    }
+
+    const auto contacts = robot.contact_points();
+    REQUIRE(!contacts.empty());
+
+    bool saw_wall_contact = false;
+    for (const auto& c : contacts) {
+        if (!(c.other_category & sim::CATEGORY_WALL)) continue;
+        saw_wall_contact = true;
+
+        // Force-on-us convention: normal should point AWAY from the wall
+        // (robot is at x ≈ +0.34 m, wall is at x = +0.375 m, so the wall
+        // pushes us in the -x direction).
+        CHECK(c.normal_x < -0.5f);                         // mostly -x
+        CHECK(std::abs(c.normal_y) < 0.5f);                // not y-aligned
+
+        // Active interaction this step → totalNormalImpulse > 0.
+        CHECK(c.normal_impulse > 0.0f);
+
+        // Contact point should be at (or just past) the right wall x.
+        // Allow a little slack for Box2D's slop tolerance.
+        CHECK(c.point_x > 0.35f);
+        CHECK(c.point_x < 0.40f);
+
+        // Penetration depth: in steady-state pinning, separation is small
+        // negative (a sliver of overlap). Mainly check it's not wildly out
+        // of the expected unit range.
+        CHECK(c.separation < 0.01f);
+        CHECK(c.separation > -0.05f);
+    }
+    CHECK(saw_wall_contact);
+}
+
+TEST_CASE("Robot (dynamic) reports no contacts mid-field") {
+    // Sanity check the "empty" case — drive forward briefly, well inside
+    // the field. No contacts should be reported.
+    sim::World world{};
+    sim::Robot robot(world, dynamic_default());
+
+    diff_drive::Control<float> u;
+    u << 0.2f, 0.2f;
+
+    const float dt = 0.01f;
+    for (int i = 0; i < 20; ++i) {
+        robot.pre_step(u, dt);
+        world.step(dt);
+        robot.post_step();
+    }
+
+    CHECK(robot.contact_points().empty());
+}
+
 TEST_CASE("Robot (kinematic) honors set_state") {
     sim::World world{};
     sim::Robot robot(world, kinematic_default());
