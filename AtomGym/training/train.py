@@ -51,6 +51,7 @@ from stable_baselines3.common.vec_env import (  # noqa: E402
 
 from AtomGym.environments import AtomSoloEnv, InitialStateRanges  # noqa: E402
 from AtomGym.rewards import (  # noqa: E402
+    BallAlignmentReward,
     BallProgressReward,
     DistanceToBallReward,
     GoalScoredReward,
@@ -70,6 +71,7 @@ def make_l1_env(
     max_episode_steps: int = 400,
     stall_penalty: float = 0.3,
     obstacle_contact_penalty: float = 0.5,
+    ball_alignment: float = 0.3,
 ) -> AtomSoloEnv:
     """Construct a Level-1 env with the agreed reward composition and a
     light initial-state DR config. Edit here for first-pass tuning."""
@@ -91,6 +93,13 @@ def make_l1_env(
         # throttle into the wall), so stall-penalty doesn't punish it.
         # Penalise time spent in obstacle contact instead.
         rewards.append(ObstacleContactPenalty(weight=-obstacle_contact_penalty))
+    if ball_alignment > 0.0:
+        # Close the credit-assignment hole in the approach regime —
+        # rotating to point the body axis at the ball gives a small
+        # positive gradient even when the distance is unchanged. Term
+        # is silent during ball contact (preserves dribbling) and
+        # silent far from the ball (other rewards do the work).
+        rewards.append(BallAlignmentReward(weight=ball_alignment))
     init_ranges = InitialStateRanges(
         # Default: random pose, zero velocities. Once the policy can score
         # from a stationary ball, broaden the velocity ranges to make the
@@ -113,6 +122,7 @@ def make_vec_env(
     max_episode_steps: int,
     stall_penalty: float,
     obstacle_contact_penalty: float,
+    ball_alignment: float,
 ) -> VecEnv:
     # Wrap each env in SB3's Monitor so PPO can log rollout/ep_rew_mean and
     # rollout/ep_len_mean (it pulls those from `info["episode"]` which Monitor
@@ -127,6 +137,7 @@ def make_vec_env(
                     max_episode_steps=max_episode_steps,
                     stall_penalty=stall_penalty,
                     obstacle_contact_penalty=obstacle_contact_penalty,
+                    ball_alignment=ball_alignment,
                 )
             )
         )
@@ -261,8 +272,26 @@ def main() -> None:
              "the stall penalty per second of contact.",
     )
     parser.add_argument(
+        "--ball-alignment", type=float, default=0.3,
+        help="Weight (positive magnitude) on the body-axis alignment reward "
+             "— a small per-step bonus for facing the ball (front OR back) "
+             "in a narrow distance band just outside the contact range. "
+             "Closes the credit-assignment hole between the approach and "
+             "contact regimes; silent during contact to preserve dribbling. "
+             "Set to 0 to disable.",
+    )
+    parser.add_argument(
         "--checkpoint-every", type=int, default=50_000,
         help="Save a checkpoint every N total env steps.",
+    )
+    parser.add_argument(
+        "--disable-reward-breakdown", action="store_true",
+        help="Skip the per-term reward breakdown callback. The callback "
+             "iterates over every env's info dict every step and feeds "
+             "each reward term to logger.record_mean — at 16 envs × 1024 "
+             "steps × ~5 terms = 80K record_mean calls per rollout, the "
+             "per-call overhead is non-negligible. Use this flag to "
+             "isolate its cost in a profile / throughput-tuning run.",
     )
     parser.add_argument(
         "--render-every", type=int, default=None,
@@ -313,6 +342,7 @@ def main() -> None:
         args.max_episode_steps,
         args.stall_penalty,
         args.obstacle_contact_penalty,
+        args.ball_alignment,
     )
 
     # PPO with 2x128 MLP for both policy and value heads.
@@ -351,8 +381,9 @@ def main() -> None:
             save_path=str(ckpt_dir),
             name_prefix="ppo",
         ),
-        RewardBreakdownCallback(),
     ]
+    if not args.disable_reward_breakdown:
+        callbacks.append(RewardBreakdownCallback())
     if args.render_every is not None:
         gif_dir = output_dir / "gifs"
         rows, cols = args.render_grid
@@ -363,6 +394,7 @@ def main() -> None:
                     max_episode_steps=args.max_episode_steps,
                     stall_penalty=args.stall_penalty,
                     obstacle_contact_penalty=args.obstacle_contact_penalty,
+                    ball_alignment=args.ball_alignment,
                 ),
                 render_every=args.render_every,
                 save_dir=gif_dir,
@@ -390,6 +422,10 @@ def main() -> None:
         print(f"[train] obstacle pen. : weight=-{args.obstacle_contact_penalty}")
     else:
         print(f"[train] obstacle pen. : disabled")
+    if args.ball_alignment > 0:
+        print(f"[train] ball alignment: weight=+{args.ball_alignment}")
+    else:
+        print(f"[train] ball alignment: disabled")
     print(f"[train] checkpoints   : every {args.checkpoint_every:,} steps → {ckpt_dir}")
     if args.render_every is not None:
         rows, cols = args.render_grid

@@ -54,10 +54,9 @@ def test_full_spin_returns_zero() -> None:
     assert term(_ctx_with_action(0.0, -1.0)) == pytest.approx(0.0)
 
 
-def test_diagonal_full_action_clips_to_zero() -> None:
-    """(1, 1) has L2 magnitude sqrt(2) ≈ 1.41 > 1; the clip prevents the
-    term from going negative (which would be a bonus rather than a penalty
-    when used with a negative weight)."""
+def test_diagonal_full_action_returns_zero() -> None:
+    """(1, 1): max(|V|, |Ω|) = 1, penalty = 0. With L∞ this is naturally
+    zero rather than relying on a clip."""
     term = StallPenaltyReward()
     assert term(_ctx_with_action(1.0, 1.0)) == pytest.approx(0.0)
     assert term(_ctx_with_action(-1.0, -1.0)) == pytest.approx(0.0)
@@ -80,10 +79,34 @@ def test_quarter_pure_spin() -> None:
 
 
 def test_diagonal_partial_action() -> None:
-    """V=Ω=0.3 → magnitude sqrt(0.18) ≈ 0.424 → penalty ≈ 0.576."""
+    """V=Ω=0.3 → max(|V|, |Ω|) = 0.3 → penalty 0.7. The L∞ formulation
+    gives no benefit to adding Ω alongside V — same penalty as (0.3, 0)
+    or (0, 0.3) — which is the whole point of the rewrite."""
     term = StallPenaltyReward()
-    expected = 1.0 - (0.3**2 + 0.3**2) ** 0.5
-    assert term(_ctx_with_action(0.3, 0.3)) == pytest.approx(expected, abs=1e-6)
+    assert term(_ctx_with_action(0.3, 0.3)) == pytest.approx(0.7, abs=1e-6)
+
+
+def test_pure_rotation_matches_pure_thrust() -> None:
+    """L∞ symmetry: (V, 0) and (0, V) must give identical penalties.
+    The L2 formulation already shared this property at full magnitude
+    (both → 0), but it differed at intermediate values; L∞ matches at
+    every magnitude."""
+    term = StallPenaltyReward()
+    for mag in (0.1, 0.25, 0.5, 0.75):
+        assert term(_ctx_with_action(mag, 0.0)) == pytest.approx(
+            term(_ctx_with_action(0.0, mag)), abs=1e-6
+        )
+
+
+def test_adding_omega_to_v_does_not_help() -> None:
+    """Diagnostic for the failure mode that motivated the rewrite: in
+    L2, going from (0.3, 0) to (0.3, 0.3) reduced penalty from 0.7 to
+    ~0.576; in L∞ both give 0.7. This is what removes the spurious
+    radial pull toward the (1, 1) corner."""
+    term = StallPenaltyReward()
+    pure   = term(_ctx_with_action(0.3, 0.0))
+    mixed  = term(_ctx_with_action(0.3, 0.3))
+    assert pure == pytest.approx(mixed, abs=1e-6)
 
 
 def test_symmetry_of_signs() -> None:
