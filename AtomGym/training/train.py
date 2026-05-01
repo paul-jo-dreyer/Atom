@@ -77,8 +77,8 @@ def make_l1_env(
     light initial-state DR config. Edit here for first-pass tuning."""
     rewards: list = [
         # Dense shaping: reward speed-toward-goal and proximity-to-ball.
-        BallProgressReward(weight=1.0),       # ~ m/s of ball progress toward +x goal
-        DistanceToBallReward(weight=-0.5),    # negative ⟹ closer = better
+        BallProgressReward(weight=1.0),  # ~ m/s of ball progress toward +x goal
+        DistanceToBallReward(weight=-0.5),  # negative ⟹ closer = better
         # Sparse terminal: large ± reward on a goal.
         GoalScoredReward(weight=50.0),
     ]
@@ -104,12 +104,13 @@ def make_l1_env(
         # Default: random pose, zero velocities. Once the policy can score
         # from a stationary ball, broaden the velocity ranges to make the
         # policy robust to a moving ball / off-axis approach.
+        ball_speed=(0.0, 0.3)
     )
     return AtomSoloEnv(
         rewards=rewards,
         init_state_ranges=init_ranges,
-        physics_dt=1.0 / 60.0,    # sim ticks at 60 Hz
-        control_dt=1.0 / 30.0,    # policy emits actions at 30 Hz (action_repeat=2)
+        physics_dt=1.0 / 60.0,  # sim ticks at 60 Hz
+        control_dt=1.0 / 30.0,  # policy emits actions at 30 Hz (action_repeat=2)
         max_episode_steps=max_episode_steps,
         seed=seed,
     )
@@ -198,132 +199,187 @@ def _parse_grid(s: str) -> tuple[int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train PPO on AtomSoloEnv (Level 1).")
     parser.add_argument(
-        "--run-name", type=str, default="l1_baseline",
+        "--run-name",
+        type=str,
+        default="l1_baseline",
         help="Name of this run. Outputs land under training_runs/<run_name>/.",
     )
     parser.add_argument(
-        "--total-timesteps", type=int, default=1_000_000,
+        "--total-timesteps",
+        type=int,
+        default=1_000_000,
         help="Total environment steps (across all parallel envs).",
     )
     parser.add_argument(
-        "--n-envs", type=int, default=4,
+        "--n-envs",
+        type=int,
+        default=4,
         help="Number of parallel envs. SB3's PPO batch comes from n_envs * n_steps.",
     )
     parser.add_argument(
-        "--seed", type=int, default=0,
+        "--seed",
+        type=int,
+        default=0,
         help="Base seed; each parallel env gets seed + worker_index.",
     )
     parser.add_argument(
-        "--use-subproc", action="store_true",
+        "--use-subproc",
+        action="store_true",
         help="Use SubprocVecEnv (one process per env). Default is DummyVecEnv "
-             "(single-process, easier to debug).",
+        "(single-process, easier to debug).",
     )
     parser.add_argument(
-        "--learning-rate", type=float, default=3e-4,
+        "--learning-rate",
+        type=float,
+        default=3e-4,
         help="PPO learning rate (default: 3e-4, SB3 default).",
     )
     parser.add_argument(
-        "--n-steps", type=int, default=2048,
+        "--n-steps",
+        type=int,
+        default=2048,
         help="PPO rollout length per env. SB3 default 2048; lower if memory tight.",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=64,
+        "--batch-size",
+        type=int,
+        default=64,
         help="PPO minibatch size for the update. SB3 default 64. With small "
-             "MLPs the per-minibatch Python/PyTorch overhead dominates the "
-             "actual matmul, so the update phase is *much* faster at 512-2048 "
-             "even though the number of gradient steps drops. Ensure n_envs * "
-             "n_steps is divisible by batch_size.",
+        "MLPs the per-minibatch Python/PyTorch overhead dominates the "
+        "actual matmul, so the update phase is *much* faster at 512-2048 "
+        "even though the number of gradient steps drops. Ensure n_envs * "
+        "n_steps is divisible by batch_size.",
     )
     parser.add_argument(
-        "--max-episode-steps", type=int, default=400,
+        "--max-episode-steps",
+        type=int,
+        default=400,
         help="Episode truncation length, in CONTROL steps. At control_dt=1/30s, "
-             "400 steps ≈ 13.3 s of sim time per episode. Lower = more episode "
-             "boundaries per training step ⟹ faster credit assignment on sparse rewards.",
+        "400 steps ≈ 13.3 s of sim time per episode. Lower = more episode "
+        "boundaries per training step ⟹ faster credit assignment on sparse rewards.",
     )
     parser.add_argument(
-        "--ent-coef", type=float, default=0.01,
+        "--ent-coef",
+        type=float,
+        default=0.01,
         help="PPO entropy bonus coefficient. SB3 default is 0.0; we raise to 0.01 "
-             "to push back on premature collapse to deterministic 'do nothing' actions. "
-             "Tune up (0.02-0.05) if the policy keeps stalling out; tune down (0.005-0.0) "
-             "once the policy is consistently scoring and you want it to commit.",
+        "to push back on premature collapse to deterministic 'do nothing' actions. "
+        "Tune up (0.02-0.05) if the policy keeps stalling out; tune down (0.005-0.0) "
+        "once the policy is consistently scoring and you want it to commit.",
     )
     parser.add_argument(
-        "--log-std-init", type=float, default=0.0,
+        "--log-std-init",
+        type=float,
+        default=0.0,
         help="Initial log-std of the Gaussian action distribution. SB3 default 0.0 "
-             "⟹ initial std=1.0. Bump to 0.3-0.5 (std ≈ 1.35-1.65) to widen the "
-             "starting distribution and increase initial exploration.",
+        "⟹ initial std=1.0. Bump to 0.3-0.5 (std ≈ 1.35-1.65) to widen the "
+        "starting distribution and increase initial exploration.",
     )
     parser.add_argument(
-        "--stall-penalty", type=float, default=0.3,
+        "--stall-penalty",
+        type=float,
+        default=0.3,
         help="Weight (positive magnitude) on the stall-penalty reward term — "
-             "a per-step nudge away from near-zero (V, Ω) actions. The term "
-             "internally uses NEGATIVE this value as its weight. Set to 0 to "
-             "disable. Larger ⟹ stronger push to keep moving; if the policy "
-             "ends up spamming high-magnitude actions even when wrong, dial down.",
+        "a per-step nudge away from near-zero (V, Ω) actions. The term "
+        "internally uses NEGATIVE this value as its weight. Set to 0 to "
+        "disable. Larger ⟹ stronger push to keep moving; if the policy "
+        "ends up spamming high-magnitude actions even when wrong, dial down.",
     )
     parser.add_argument(
-        "--obstacle-contact-penalty", type=float, default=0.5,
+        "--obstacle-contact-penalty",
+        type=float,
+        default=0.5,
         help="Weight (positive magnitude) on the obstacle-contact reward "
-             "term — penalises fraction of the control step spent touching "
-             "anything that isn't the ball (walls, goal-walls, other robots). "
-             "Counters the wall-pinning failure mode the stall penalty can "
-             "induce. Set to 0 to disable. Larger ⟹ stronger push away from "
-             "walls; signal is bounded in [0, 1] so weight is comparable to "
-             "the stall penalty per second of contact.",
+        "term — penalises fraction of the control step spent touching "
+        "anything that isn't the ball (walls, goal-walls, other robots). "
+        "Counters the wall-pinning failure mode the stall penalty can "
+        "induce. Set to 0 to disable. Larger ⟹ stronger push away from "
+        "walls; signal is bounded in [0, 1] so weight is comparable to "
+        "the stall penalty per second of contact.",
     )
     parser.add_argument(
-        "--ball-alignment", type=float, default=0.3,
+        "--ball-alignment",
+        type=float,
+        default=0.3,
         help="Weight (positive magnitude) on the body-axis alignment reward "
-             "— a small per-step bonus for facing the ball (front OR back) "
-             "in a narrow distance band just outside the contact range. "
-             "Closes the credit-assignment hole between the approach and "
-             "contact regimes; silent during contact to preserve dribbling. "
-             "Set to 0 to disable.",
+        "— a small per-step bonus for facing the ball (front OR back) "
+        "in a narrow distance band just outside the contact range. "
+        "Closes the credit-assignment hole between the approach and "
+        "contact regimes; silent during contact to preserve dribbling. "
+        "Set to 0 to disable.",
     )
     parser.add_argument(
-        "--checkpoint-every", type=int, default=50_000,
+        "--checkpoint-every",
+        type=int,
+        default=50_000,
         help="Save a checkpoint every N total env steps.",
     )
     parser.add_argument(
-        "--disable-reward-breakdown", action="store_true",
+        "--disable-reward-breakdown",
+        action="store_true",
         help="Skip the per-term reward breakdown callback. The callback "
-             "iterates over every env's info dict every step and feeds "
-             "each reward term to logger.record_mean — at 16 envs × 1024 "
-             "steps × ~5 terms = 80K record_mean calls per rollout, the "
-             "per-call overhead is non-negligible. Use this flag to "
-             "isolate its cost in a profile / throughput-tuning run.",
+        "iterates over every env's info dict every step and feeds "
+        "each reward term to logger.record_mean — at 16 envs × 1024 "
+        "steps × ~5 terms = 80K record_mean calls per rollout, the "
+        "per-call overhead is non-negligible. Use this flag to "
+        "isolate its cost in a profile / throughput-tuning run.",
     )
     parser.add_argument(
-        "--render-every", type=int, default=None,
+        "--render-every",
+        type=int,
+        default=None,
         help="Render the current policy as a .gif every N total env steps "
-             "(written to training_runs/<run_name>/gifs/). Disabled by default.",
+        "(written to training_runs/<run_name>/gifs/). Disabled by default.",
     )
     parser.add_argument(
-        "--render-eval-seed", type=int, default=999,
+        "--render-eval-seed",
+        type=int,
+        default=999,
         help="Fixed seed for the eval-rollout env so progress over training "
-             "is directly comparable — same scenario every render.",
+        "is directly comparable — same scenario every render.",
     )
     parser.add_argument(
-        "--render-frame-stride", type=int, default=1,
+        "--render-frame-stride",
+        type=int,
+        default=1,
         help="Keep every Nth frame in the gif (higher = smaller files, "
-             "choppier playback). Playback fps adjusts to keep 1 s gif = 1 s sim.",
+        "choppier playback). Playback fps adjusts to keep 1 s gif = 1 s sim.",
     )
     parser.add_argument(
-        "--render-max-seconds", type=float, default=None,
+        "--render-max-seconds",
+        type=float,
+        default=None,
         help="Cap each render rollout to N seconds of sim time. Caps both "
-             "the gif's playback length AND the wall-clock the callback "
-             "spends each interval. Default: no cap (run a full episode).",
+        "the gif's playback length AND the wall-clock the callback "
+        "spends each interval. Default: no cap (run a full episode).",
     )
     parser.add_argument(
-        "--render-grid", type=_parse_grid, default=(1, 1),
+        "--render-grid",
+        type=_parse_grid,
+        default=(1, 1),
         help="Render a composite gif laid out as a grid of independent "
-             "rollouts. Format: 'RxC' (e.g. '2x2' for a 4-cell grid). Each "
-             "cell uses --render-eval-seed + cell_index, so progress is "
-             "directly comparable across renders. Default: 1x1 (single cell).",
+        "rollouts. Format: 'RxC' (e.g. '2x2' for a 4-cell grid). Each "
+        "cell uses --render-eval-seed + cell_index, so progress is "
+        "directly comparable across renders. Default: 1x1 (single cell).",
     )
     parser.add_argument(
-        "--output-root", type=Path, default=_REPO_ROOT / "training_runs",
+        "--output-root",
+        type=Path,
+        default=_REPO_ROOT / "training_runs",
         help="Parent directory for run outputs.",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume training from a checkpoint .zip (e.g. "
+        "training_runs/<run_name>/checkpoints/ppo_12000000_steps.zip). "
+        "The model's timestep counter is restored and learning continues "
+        "in the same TensorBoard run, with --total-timesteps interpreted "
+        "as the absolute target across original + resumed runs (so passing "
+        "the same flags as the original run will train the remainder up to "
+        "that target). Pass --run-name matching the original so checkpoints "
+        "and gifs land in the same directories.",
     )
     args = parser.parse_args()
 
@@ -350,26 +406,56 @@ def main() -> None:
     # exploration during early training. `ent_coef` is the entropy bonus
     # that keeps the policy from collapsing to a low-std deterministic
     # mode before it has found the good actions.
-    policy_kwargs: dict[str, Any] = dict(
-        net_arch=dict(pi=[128, 128], vf=[128, 128]),
-        log_std_init=args.log_std_init,
-    )
-    model = PPO(
-        "MlpPolicy",
-        vec_env,
-        policy_kwargs=policy_kwargs,
-        learning_rate=args.learning_rate,
-        n_steps=args.n_steps,
-        batch_size=args.batch_size,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=args.ent_coef,
-        verbose=1,
-        tensorboard_log=str(tb_dir),
-        seed=args.seed,
-    )
+    if args.resume is not None:
+        # Resume path: load weights, optimiser state, and the env-step
+        # counter from the checkpoint. Override hyperparameters from the
+        # CLI so the *current* values take effect (lets you tweak
+        # ent_coef / lr mid-run if you need to). policy_kwargs are NOT
+        # passed — the network architecture is loaded from the checkpoint.
+        if not args.resume.is_file():
+            raise FileNotFoundError(
+                f"--resume: checkpoint file not found: {args.resume}"
+            )
+        model = PPO.load(
+            str(args.resume),
+            env=vec_env,
+            learning_rate=args.learning_rate,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            ent_coef=args.ent_coef,
+            tensorboard_log=str(tb_dir),
+        )
+        loaded_steps = int(model.num_timesteps)
+        remaining_steps = max(0, args.total_timesteps - loaded_steps)
+        if remaining_steps == 0:
+            print(
+                f"[train] resume target {args.total_timesteps:,} already reached "
+                f"(checkpoint at {loaded_steps:,}). Nothing to do."
+            )
+            return
+    else:
+        policy_kwargs: dict[str, Any] = dict(
+            net_arch=dict(pi=[128, 128], vf=[128, 128]),
+            log_std_init=args.log_std_init,
+        )
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            policy_kwargs=policy_kwargs,
+            learning_rate=args.learning_rate,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=args.ent_coef,
+            verbose=1,
+            tensorboard_log=str(tb_dir),
+            seed=args.seed,
+        )
+        loaded_steps = 0
+        remaining_steps = args.total_timesteps
 
     # Callbacks
     # CheckpointCallback's save_freq is per-env, so divide the desired total-
@@ -409,11 +495,23 @@ def main() -> None:
 
     print(f"[train] run name      : {args.run_name}")
     print(f"[train] output dir    : {output_dir}")
-    print(f"[train] total timesteps: {args.total_timesteps:,}")
-    print(f"[train] n_envs        : {args.n_envs} ({'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'})")
+    if args.resume is not None:
+        print(f"[train] resume from   : {args.resume}")
+        print(f"[train] resumed at    : {loaded_steps:,} env steps")
+        print(
+            f"[train] remaining     : {remaining_steps:,} steps "
+            f"to reach target {args.total_timesteps:,}"
+        )
+    else:
+        print(f"[train] total timesteps: {args.total_timesteps:,}")
+    print(
+        f"[train] n_envs        : {args.n_envs} ({'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'})"
+    )
     print(f"[train] policy net    : 2x128 MLP")
     print(f"[train] episode steps : {args.max_episode_steps}")
-    print(f"[train] exploration   : ent_coef={args.ent_coef}  log_std_init={args.log_std_init}")
+    print(
+        f"[train] exploration   : ent_coef={args.ent_coef}  log_std_init={args.log_std_init}"
+    )
     if args.stall_penalty > 0:
         print(f"[train] stall penalty : weight=-{args.stall_penalty}")
     else:
@@ -430,14 +528,22 @@ def main() -> None:
     if args.render_every is not None:
         rows, cols = args.render_grid
         grid_str = f" ({rows}x{cols} grid)" if (rows, cols) != (1, 1) else ""
-        print(f"[train] gifs          : every {args.render_every:,} steps{grid_str} → {output_dir / 'gifs'}")
+        print(
+            f"[train] gifs          : every {args.render_every:,} steps{grid_str} → {output_dir / 'gifs'}"
+        )
     print(f"[train] tensorboard   : {tb_dir}")
     print()
 
     model.learn(
-        total_timesteps=args.total_timesteps,
+        total_timesteps=remaining_steps,
         callback=callbacks,
         tb_log_name=args.run_name,
+        # On resume: keep the model's existing num_timesteps counter so
+        # checkpoint filenames continue from where they left off (e.g.
+        # ppo_13000000_steps.zip after resuming at 12M) and the
+        # TensorBoard run picks up its existing log dir instead of
+        # starting a fresh `_2` subdir.
+        reset_num_timesteps=(args.resume is None),
     )
 
     final_path = output_dir / "final.zip"

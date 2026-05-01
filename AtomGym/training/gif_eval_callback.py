@@ -54,7 +54,7 @@ def _ensure_atomsim_viz_on_path() -> Path:
 
 _ATOMSIM_VIZ_PARENT = _ensure_atomsim_viz_on_path()
 
-from viz.recorder import write_video  # noqa: E402
+from viz.recorder import VideoRecorder  # noqa: E402
 from viz.renderers import PygameHeadlessRenderer  # noqa: E402
 from viz.scene import build_scene  # noqa: E402
 from viz.style import load_style  # noqa: E402
@@ -215,7 +215,19 @@ class GifEvalCallback(BaseCallback):
             obs, _ = env.reset(seed=self._eval_seed + i)
             obs_per_cell.append(obs)
 
-        composite_frames: list[np.ndarray] = []
+        # Stream frames directly to disk via VideoRecorder rather than
+        # accumulating a list[ndarray] in memory. Each composite frame is
+        # ~render_w × render_h × n_cells × 3 bytes (e.g. 3×3 × 1280×720 ≈
+        # 25 MB), so a multi-second rollout buffered in RAM can spike to
+        # >1 GB on the main process — enough to OOM the box at high n_envs
+        # with SubprocVecEnv. imageio's gif writer streams (writes each
+        # frame's bytes to fp on add_image), so this is O(1) in rollout
+        # length.
+        env0 = self._eval_envs[0]
+        playback_fps = (1.0 / env0.control_dt) / self._frame_stride
+        out = self._save_dir / f"step_{self.num_timesteps:08d}.gif"
+        recorder: VideoRecorder | None = None  # lazy: create on first frame
+        n_frames_written = 0
         sub_idx = 0
         sim_t = 0.0
         time_capped = False
@@ -276,23 +288,21 @@ class GifEvalCallback(BaseCallback):
                 cell_frames.append(frame)
                 last_frame_per_cell[i] = frame
 
-            composite_frames.append(
-                _composite_grid(cell_frames, self._grid_rows, self._grid_cols)
+            composite = _composite_grid(
+                cell_frames, self._grid_rows, self._grid_cols
             )
+            if recorder is None:
+                recorder = VideoRecorder(out, fps=playback_fps)
+            recorder.add_frame(composite)
+            n_frames_written += 1
 
             if self._max_seconds is not None and sim_t >= self._max_seconds:
                 time_capped = True
                 break
 
-        if not composite_frames:
+        if recorder is None:
             return  # nothing to write
-
-        # Playback fps tied to control rate / stride so gif = real-time sim.
-        env0 = self._eval_envs[0]
-        playback_fps = (1.0 / env0.control_dt) / self._frame_stride
-
-        out = self._save_dir / f"step_{self.num_timesteps:08d}.gif"
-        write_video(out, composite_frames, fps=playback_fps)
+        recorder.close()
 
         if self.verbose >= 1:
             n_scored = sum(
@@ -303,7 +313,7 @@ class GifEvalCallback(BaseCallback):
             outcome = "time_capped" if time_capped else "all_ended"
             print(
                 f"[gif_eval] step {self.num_timesteps:>9,}: {out.name}  "
-                f"({len(composite_frames)} frames, t={sim_t:.2f}s, "
+                f"({n_frames_written} frames, t={sim_t:.2f}s, "
                 f"mean_R={mean_R:+.2f}, scored={n_scored}/{self._n_cells}, "
                 f"{outcome})"
             )
