@@ -123,34 +123,60 @@ class PygameSceneDrawer:
         xh, yh = scene.field.x_half, scene.field.y_half
         gh, gx = scene.field.goal_y_half, scene.field.goal_extension
         color = self.style.field.walls
-        width = self.style.field.walls_width_px
+        boarder_width = self.style.field.walls_width_px
+        net_width = max(1, int(boarder_width * 0.5))
         has_goals = gh > 0.0 and gx > 0.0
 
-        def line(p1: tuple[float, float], p2: tuple[float, float]) -> None:
-            pygame.draw.line(surf, color, self._w2s(*p1), self._w2s(*p2), width)
+        def line(
+            p1: tuple[float, float], p2: tuple[float, float], thickness: int
+        ) -> None:
+            pygame.draw.line(surf, color, self._w2s(*p1), self._w2s(*p2), thickness)
 
         # Top + bottom walls (full-width).
-        line((-xh, yh), (xh, yh))
-        line((-xh, -yh), (xh, -yh))
+        line((-xh, yh), (xh, yh), boarder_width)
+        line((-xh, -yh), (xh, -yh), boarder_width)
 
         if not has_goals:
-            line((-xh, -yh), (-xh, yh))
-            line((xh, -yh), (xh, yh))
+            line((-xh, -yh), (-xh, yh), boarder_width)
+            line((xh, -yh), (xh, yh), boarder_width)
             return
 
         # Field walls split around the goal mouth.
-        line((-xh, -yh), (-xh, yh))
-        line((xh, -yh), (xh, yh))
+        line((-xh, -yh), (-xh, yh), boarder_width)
+        line((xh, -yh), (xh, yh), boarder_width)
 
         # Left goal chamber — U opening to the right.
-        line((-xh - gx, gh), (-xh, gh))
-        line((-xh - gx, -gh), (-xh, -gh))
-        line((-xh - gx, -gh), (-xh - gx, gh))
+        line((-xh - gx, gh), (-xh, gh), boarder_width)
+        line((-xh - gx, -gh), (-xh, -gh), boarder_width)
+        line((-xh - gx, -gh), (-xh - gx, gh), boarder_width)
 
         # Right goal chamber — U opening to the left.
-        line((xh, gh), (xh + gx, gh))
-        line((xh, -gh), (xh + gx, -gh))
-        line((xh + gx, -gh), (xh + gx, gh))
+        line((xh, gh), (xh + gx, gh), boarder_width)
+        line((xh, -gh), (xh + gx, -gh), boarder_width)
+        line((xh + gx, -gh), (xh + gx, gh), boarder_width)
+
+        # Left Net
+        net_gap = 0.01
+        x0 = -xh - gx
+        x = x0
+        while x < -xh:
+            x = min(-xh, x + net_gap)
+            line((x, gh), (x, -gh), net_width)
+        y = gh
+        while y > -gh:
+            y = max(-gh, y - net_gap)
+            line((x0, y), (x0 + gx, y), net_width)
+
+        # right net
+        x0 = xh + gx
+        x = x0
+        while x > xh:
+            x = max(xh, x - net_gap)
+            line((x, gh), (x, -gh), net_width)
+        y = gh
+        while y > -gh:
+            y = max(-gh, y - net_gap)
+            line((x0, y), (x0 - gx, y), net_width)
 
     def _draw_markings(self, surf: pygame.Surface, scene: SceneSpec) -> None:
         """Cosmetic interior soccer-field lines: halfway line, centre circle,
