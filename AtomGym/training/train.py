@@ -57,6 +57,7 @@ from AtomGym.rewards import (  # noqa: E402
     GoalScoredReward,
     ObstacleContactPenalty,
     StallPenaltyReward,
+    StaticFieldPenalty,
 )
 from AtomGym.training.gif_eval_callback import GifEvalCallback  # noqa: E402
 
@@ -72,6 +73,7 @@ def make_l1_env(
     stall_penalty: float = 0.3,
     obstacle_contact_penalty: float = 0.5,
     ball_alignment: float = 0.3,
+    static_field_penalty: float = 0.0,
 ) -> AtomSoloEnv:
     """Construct a Level-1 env with the agreed reward composition and a
     light initial-state DR config. Edit here for first-pass tuning."""
@@ -100,6 +102,15 @@ def make_l1_env(
         # is silent during ball contact (preserves dribbling) and
         # silent far from the ball (other rewards do the work).
         rewards.append(BallAlignmentReward(weight=ball_alignment))
+    if static_field_penalty > 0.0:
+        # Sigmoid potential field around walls + opposing goalie box.
+        # Anticipatory shaping for collision-free motion: PPO sees the
+        # boundary before contact and learns to slow / steer fluidly.
+        # Goalie-box rule layers on top — penalty starts at 0 on the
+        # box edge and ramps up with intrusion, so corners stay
+        # reachable. Geometry + sigmoid params live in
+        # StaticFieldPenalty's class defaults; edit there to retune.
+        rewards.append(StaticFieldPenalty(weight=-static_field_penalty))
     init_ranges = InitialStateRanges(
         # Default: random pose, zero velocities. Once the policy can score
         # from a stationary ball, broaden the velocity ranges to make the
@@ -124,6 +135,7 @@ def make_vec_env(
     stall_penalty: float,
     obstacle_contact_penalty: float,
     ball_alignment: float,
+    static_field_penalty: float,
 ) -> VecEnv:
     # Wrap each env in SB3's Monitor so PPO can log rollout/ep_rew_mean and
     # rollout/ep_len_mean (it pulls those from `info["episode"]` which Monitor
@@ -139,6 +151,7 @@ def make_vec_env(
                     stall_penalty=stall_penalty,
                     obstacle_contact_penalty=obstacle_contact_penalty,
                     ball_alignment=ball_alignment,
+                    static_field_penalty=static_field_penalty,
                 )
             )
         )
@@ -309,6 +322,20 @@ def main() -> None:
         "Set to 0 to disable.",
     )
     parser.add_argument(
+        "--static-field-penalty",
+        type=float,
+        default=0.0,
+        help="Weight (positive magnitude) on the static-field penalty — a "
+        "sigmoid potential field around the walls and the opposing goalie "
+        "box. Anticipatory shaping: the policy sees the boundary before "
+        "contact and learns collision-free motion via gradient rather than "
+        "via collision events. Per-step value is bounded in [0, 1], so "
+        "weight is comparable to the obstacle-contact penalty per second "
+        "of saturated proximity. Set to 0 to disable. Geometry + sigmoid "
+        "params live in StaticFieldPenalty's class defaults — edit there "
+        "to retune; preview with `python -m AtomGym.tools.render_static_field`.",
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=50_000,
@@ -399,6 +426,7 @@ def main() -> None:
         args.stall_penalty,
         args.obstacle_contact_penalty,
         args.ball_alignment,
+        args.static_field_penalty,
     )
 
     # PPO with 2x128 MLP for both policy and value heads.
@@ -424,6 +452,11 @@ def main() -> None:
             batch_size=args.batch_size,
             ent_coef=args.ent_coef,
             tensorboard_log=str(tb_dir),
+            # Explicit verbose=1 — without this the saved value is
+            # supposed to carry through, but sometimes doesn't (the
+            # stdout tabular output disappears across resume). Pinning
+            # here guarantees rollout/, train/, time/ tables show.
+            verbose=1,
         )
         loaded_steps = int(model.num_timesteps)
         remaining_steps = max(0, args.total_timesteps - loaded_steps)
@@ -481,6 +514,7 @@ def main() -> None:
                     stall_penalty=args.stall_penalty,
                     obstacle_contact_penalty=args.obstacle_contact_penalty,
                     ball_alignment=args.ball_alignment,
+                    static_field_penalty=args.static_field_penalty,
                 ),
                 render_every=args.render_every,
                 save_dir=gif_dir,
@@ -538,6 +572,11 @@ def main() -> None:
         total_timesteps=remaining_steps,
         callback=callbacks,
         tb_log_name=args.run_name,
+        # Explicit log_interval=1 — SB3 dumps the rollout/train/time
+        # tabular output every `log_interval` rollouts. 1 = every
+        # rollout, which matches the non-resume behaviour. Pinning
+        # here makes the cadence unambiguous.
+        log_interval=1,
         # On resume: keep the model's existing num_timesteps counter so
         # checkpoint filenames continue from where they left off (e.g.
         # ppo_13000000_steps.zip after resuming at 12M) and the

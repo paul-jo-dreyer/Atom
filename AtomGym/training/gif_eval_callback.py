@@ -59,7 +59,7 @@ from viz.renderers import PygameHeadlessRenderer  # noqa: E402
 from viz.scene import build_scene  # noqa: E402
 from viz.style import load_style  # noqa: E402
 
-from AtomGym.environments import AtomSoloEnv  # noqa: E402
+from AtomGym.environments import AtomSoloEnv, AtomTeamEnv  # noqa: E402
 
 
 _DEFAULT_STYLE_YAML = (
@@ -86,9 +86,11 @@ class GifEvalCallback(BaseCallback):
     Parameters
     ----------
     eval_env_factory
-        A no-arg callable returning a fresh `AtomSoloEnv`. One env per
-        grid cell is constructed at training start; subsequent renders
-        reset each one to a fixed seed.
+        A no-arg callable returning a fresh env (AtomSoloEnv or
+        AtomTeamEnv). One env per grid cell is constructed at training
+        start; subsequent renders reset each one to a fixed seed. The
+        callback duck-types on `env.opponent` to decide whether to
+        render the second robot.
     render_every
         Render cadence in total env steps. Counted against
         `self.num_timesteps`, which SB3 increments by `n_envs` per env.step.
@@ -118,7 +120,7 @@ class GifEvalCallback(BaseCallback):
     def __init__(
         self,
         *,
-        eval_env_factory: Callable[[], AtomSoloEnv],
+        eval_env_factory: Callable[[], AtomSoloEnv | AtomTeamEnv],
         render_every: int,
         save_dir: Path,
         eval_seed: int = 999,
@@ -155,7 +157,7 @@ class GifEvalCallback(BaseCallback):
         self._next_render_at: int = self._render_every
 
         # Initialised lazily in `_init_callback` (after model + env are bound).
-        self._eval_envs: list[AtomSoloEnv] = []
+        self._eval_envs: list[AtomSoloEnv | AtomTeamEnv] = []
         self._renderer: PygameHeadlessRenderer | None = None
 
     # ---- SB3 lifecycle hooks --------------------------------------------
@@ -271,15 +273,26 @@ class GifEvalCallback(BaseCallback):
                     cell_frames.append(last_frame_per_cell[i])
                     continue
 
+                # Duck-type on `env.opponent` so this callback works for
+                # both AtomSoloEnv (no opponent) and AtomTeamEnv (1v1).
+                robots: list[Any] = [("blue", env.robot)]
+                teams: dict[str, str] = {"blue": "blue"}
+                a = last_action_per_cell[i]
+                controls: dict[str, Any] = {"blue": (float(a[0]), float(a[1]))}
+                if hasattr(env, "opponent") and env.opponent is not None:
+                    robots.append(("red", env.opponent))
+                    teams["red"] = "red"
+                    # Opponent's last action isn't tracked by the callback;
+                    # show zeros so the HUD strip is consistent.
+                    controls["red"] = (0.0, 0.0)
                 scene = build_scene(
                     env.world,
-                    [("blue", env.robot)],
+                    robots,
                     [("main", env.ball)],
                     t=sim_t,
-                    teams={"blue": "blue"},
+                    teams=teams,
                 )
-                a = last_action_per_cell[i]
-                scene.controls = {"blue": (float(a[0]), float(a[1]))}
+                scene.controls = controls
                 hud_lines = [
                     f"step {self.num_timesteps:,}  cell {i}  seed {self._eval_seed + i}",
                     f"t={sim_t:5.2f}s   R={cumulative_R_per_cell[i]:+8.2f}",

@@ -12,6 +12,7 @@ from .distance_to_ball import DistanceToBallReward
 from .goal_scored import GoalScoredReward
 from .obstacle_contact import ObstacleContactPenalty
 from .stall_penalty import StallPenaltyReward
+from .static_field_penalty import StaticFieldPenalty
 
 __all__ = [
     "BallAlignmentReward",
@@ -23,4 +24,5 @@ __all__ = [
     "RewardContext",
     "RewardTerm",
     "StallPenaltyReward",
+    "StaticFieldPenalty",
 ]

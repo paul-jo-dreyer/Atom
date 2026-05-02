@@ -26,7 +26,7 @@ markings:
   line_width_px: 3
   center_circle_radius_m: 0.1     # ~scaled penalty arc / centre circle
   halfway_line: true               # vertical line through x = 0
-  goalie_box_depth_m: 0.1         # distance the box extends INTO the field
+  goalie_box_depth_m: 0.12         # distance the box extends INTO the field
   goalie_box_height_m: 0.2        # full vertical extent (top to bottom)
 
 # Default style for any robot whose `team` key is null or unknown.

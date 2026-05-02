@@ -7,5 +7,6 @@ Each level lives in its own file:
 
 from .initial_state import InitialStateRanges
 from .solo_env import AtomSoloEnv
+from .team_env import AtomTeamEnv
 
-__all__ = ["AtomSoloEnv", "InitialStateRanges"]
+__all__ = ["AtomSoloEnv", "AtomTeamEnv", "InitialStateRanges"]
