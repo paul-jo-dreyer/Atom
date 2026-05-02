@@ -280,11 +280,18 @@ class GifEvalCallback(BaseCallback):
                 a = last_action_per_cell[i]
                 controls: dict[str, Any] = {"blue": (float(a[0]), float(a[1]))}
                 if hasattr(env, "opponent") and env.opponent is not None:
-                    robots.append(("red", env.opponent))
-                    teams["red"] = "red"
-                    # Opponent's last action isn't tracked by the callback;
-                    # show zeros so the HUD strip is consistent.
-                    controls["red"] = (0.0, 0.0)
+                    # "orange" is defined as a team override in the style
+                    # YAML (matched saturation/lightness of "blue"); a
+                    # team key not in the YAML falls back to the default
+                    # robot style — a light grey-blue, which is what we
+                    # had before this fix.
+                    robots.append(("orange", env.opponent))
+                    teams["orange"] = "orange"
+                    opp_a = getattr(env, "last_opponent_action", None)
+                    if opp_a is None:
+                        controls["orange"] = (0.0, 0.0)
+                    else:
+                        controls["orange"] = (float(opp_a[0]), float(opp_a[1]))
                 scene = build_scene(
                     env.world,
                     robots,

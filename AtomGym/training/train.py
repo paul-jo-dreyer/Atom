@@ -74,6 +74,7 @@ def make_l1_env(
     obstacle_contact_penalty: float = 0.5,
     ball_alignment: float = 0.3,
     static_field_penalty: float = 0.0,
+    manipulator: str | None = None,
 ) -> AtomSoloEnv:
     """Construct a Level-1 env with the agreed reward composition and a
     light initial-state DR config. Edit here for first-pass tuning."""
@@ -124,6 +125,7 @@ def make_l1_env(
         control_dt=1.0 / 30.0,  # policy emits actions at 30 Hz (action_repeat=2)
         max_episode_steps=max_episode_steps,
         seed=seed,
+        manipulator=manipulator,
     )
 
 
@@ -136,6 +138,7 @@ def make_vec_env(
     obstacle_contact_penalty: float,
     ball_alignment: float,
     static_field_penalty: float,
+    manipulator: str | None,
 ) -> VecEnv:
     # Wrap each env in SB3's Monitor so PPO can log rollout/ep_rew_mean and
     # rollout/ep_len_mean (it pulls those from `info["episode"]` which Monitor
@@ -152,6 +155,7 @@ def make_vec_env(
                     obstacle_contact_penalty=obstacle_contact_penalty,
                     ball_alignment=ball_alignment,
                     static_field_penalty=static_field_penalty,
+                    manipulator=manipulator,
                 )
             )
         )
@@ -336,6 +340,18 @@ def main() -> None:
         "to retune; preview with `python -m AtomGym.tools.render_static_field`.",
     )
     parser.add_argument(
+        "--manipulator",
+        type=str,
+        default=None,
+        help="Name of a manipulator (pusher) config to attach to each "
+        "robot, looked up at AtomSim/sim/configs/manipulators/<name>.json. "
+        "Default None ⟹ bare-body geometry (matches existing checkpoints). "
+        "Common values: 'default_pusher', 'sidewall_pusher'. Adding a "
+        "pusher changes the action-consequence dynamics of the chassis, "
+        "so a checkpoint trained without one cannot resume with one "
+        "(and vice versa).",
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=50_000,
@@ -427,6 +443,7 @@ def main() -> None:
         args.obstacle_contact_penalty,
         args.ball_alignment,
         args.static_field_penalty,
+        args.manipulator,
     )
 
     # PPO with 2x128 MLP for both policy and value heads.
@@ -452,6 +469,11 @@ def main() -> None:
             batch_size=args.batch_size,
             ent_coef=args.ent_coef,
             tensorboard_log=str(tb_dir),
+            # CPU is faster than GPU for our MLP size — see PPO()
+            # construction below for the rationale. Pin on resume too
+            # so a checkpoint saved on GPU doesn't drag training back
+            # onto the slower path.
+            device="cpu",
             # Explicit verbose=1 — without this the saved value is
             # supposed to carry through, but sometimes doesn't (the
             # stdout tabular output disappears across resume). Pinning
@@ -483,6 +505,13 @@ def main() -> None:
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=args.ent_coef,
+            # Force CPU. At our network size (128×128 MLP, 18-d obs)
+            # the per-kernel-launch latency on GPU dwarfs the actual
+            # compute (<100k FLOPs per forward pass), AND we'd pay for
+            # PCIe traffic shipping rollout buffers across the bus.
+            # Empirically CPU is ~1.5-3× faster for MLP PPO at this
+            # scale. SB3 raises a UserWarning if you don't pin this.
+            device="cpu",
             verbose=1,
             tensorboard_log=str(tb_dir),
             seed=args.seed,
@@ -515,6 +544,7 @@ def main() -> None:
                     obstacle_contact_penalty=args.obstacle_contact_penalty,
                     ball_alignment=args.ball_alignment,
                     static_field_penalty=args.static_field_penalty,
+                    manipulator=args.manipulator,
                 ),
                 render_every=args.render_every,
                 save_dir=gif_dir,

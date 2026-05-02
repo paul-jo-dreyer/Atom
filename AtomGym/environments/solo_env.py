@@ -37,6 +37,7 @@ the -x goal is "ours to defend".
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -62,6 +63,19 @@ def _find_atomsim_build_dir() -> Path:
     raise RuntimeError(
         "Could not locate AtomSim release build. Run "
         "`cmake --preset release && cmake --build build/release` from AtomSim/."
+    )
+
+
+def _find_atomsim_configs_dir() -> Path:
+    """Walk upward to find AtomSim/sim/configs. Same layout assumption as
+    `_find_atomsim_build_dir`. Used to resolve manipulator JSON files."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "AtomSim" / "sim" / "configs"
+        if candidate.is_dir():
+            return candidate
+    raise RuntimeError(
+        "Could not locate AtomSim/sim/configs (needed for manipulator JSONs)."
     )
 
 
@@ -140,6 +154,7 @@ class AtomSoloEnv(gym.Env):
         control_dt: float | None = None,
         max_episode_steps: int = 800,  # ≈13.3 s at 60 Hz control
         seed: int | None = None,
+        manipulator: str | None = None,
     ) -> None:
         """
         Parameters
@@ -207,7 +222,7 @@ class AtomSoloEnv(gym.Env):
         self.goal_y_half = float(self.world.config.goal_y_half)
         self.goal_extension = float(self.world.config.goal_extension)
 
-        self._robot_cfg = self._make_robot_config()
+        self._robot_cfg = self._make_robot_config(manipulator=manipulator)
         self.robot = sim_py.Robot(self.world, self._robot_cfg)
 
         self._ball_cfg = self._make_ball_config()
@@ -463,7 +478,12 @@ class AtomSoloEnv(gym.Env):
         )
 
     @staticmethod
-    def _make_robot_config() -> sim_py.RobotConfig:
+    def _make_robot_config(manipulator: str | None = None) -> sim_py.RobotConfig:
+        """Build a sim_py.RobotConfig with the chassis-only defaults. If
+        `manipulator` is set, loads the named manipulator polygon from
+        `AtomSim/sim/configs/manipulators/<name>.json` and attaches it.
+        Pass None (default) to keep the bare-body geometry — backwards-
+        compatible with checkpoints trained without a pusher."""
         cfg = sim_py.RobotConfig()
         cfg.body_type = sim_py.BodyType.Dynamic
         cfg.chassis_side = 0.060
@@ -471,6 +491,19 @@ class AtomSoloEnv(gym.Env):
         cfg.yaw_inertia = 5.0e-4
         cfg.dynamics_params.track_width = TRACK_WIDTH_DEFAULT
         cfg.dynamics_params.tau_motor = 0.05
+        if manipulator is not None:
+            json_path = (
+                _find_atomsim_configs_dir() / "manipulators" / f"{manipulator}.json"
+            )
+            if not json_path.is_file():
+                raise FileNotFoundError(
+                    f"manipulator config not found: {json_path}. "
+                    f"Available: {sorted(p.stem for p in json_path.parent.glob('*.json'))}"
+                )
+            data = json.loads(json_path.read_text())
+            cfg.manipulator_parts = [
+                [(float(v[0]), float(v[1])) for v in part] for part in data["parts"]
+            ]
         return cfg
 
     @staticmethod

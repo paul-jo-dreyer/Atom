@@ -151,10 +151,10 @@ def test_perpendicular_heading_returns_zero() -> None:
     assert term(ctx) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_back_aligned_matches_front_aligned() -> None:
-    """|cos| symmetry: facing the ball (θ=0) and facing 180° away
-    should give identical reward. Pushing a ball with the back face
-    is just as effective as the front for this task."""
+def test_back_aligned_scales_by_back_weight() -> None:
+    """Asymmetric shaping: back-aligned (θ=π) should earn
+    `back_weight` × the front-aligned (θ=0) reward. Default
+    back_weight=0.3."""
     term = BallAlignmentReward(inner_radius=0.044, outer_radius=0.10)
     midpoint = 0.5 * (0.044 + 0.10)
     front = _ctx_for(
@@ -167,7 +167,66 @@ def test_back_aligned_matches_front_aligned() -> None:
         ball_xy=(midpoint, 0.0),
         robot_theta=math.pi,
     )
+    assert term(front) == pytest.approx(1.0, abs=1e-6)
+    assert term(back) == pytest.approx(0.3, abs=1e-6)
+
+
+def test_back_weight_zero_gives_no_back_reward() -> None:
+    """back_weight=0 ⟹ back-aligned earns nothing (still no penalty)."""
+    term = BallAlignmentReward(
+        inner_radius=0.044, outer_radius=0.10, back_weight=0.0
+    )
+    midpoint = 0.5 * (0.044 + 0.10)
+    back = _ctx_for(
+        robot_xy=(0.0, 0.0),
+        ball_xy=(midpoint, 0.0),
+        robot_theta=math.pi,
+    )
+    assert term(back) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_back_weight_one_recovers_symmetry() -> None:
+    """back_weight=1 recovers the original symmetric shaping — front
+    and back score identically."""
+    term = BallAlignmentReward(
+        inner_radius=0.044, outer_radius=0.10, back_weight=1.0
+    )
+    midpoint = 0.5 * (0.044 + 0.10)
+    front = _ctx_for(
+        robot_xy=(0.0, 0.0),
+        ball_xy=(midpoint, 0.0),
+        robot_theta=0.0,
+    )
+    back = _ctx_for(
+        robot_xy=(0.0, 0.0),
+        ball_xy=(midpoint, 0.0),
+        robot_theta=math.pi,
+    )
     assert term(front) == pytest.approx(term(back), abs=1e-6)
+
+
+def test_back_weight_validated() -> None:
+    """back_weight outside [0, 1] should raise."""
+    with pytest.raises(ValueError, match="back_weight"):
+        BallAlignmentReward(back_weight=-0.1)
+    with pytest.raises(ValueError, match="back_weight"):
+        BallAlignmentReward(back_weight=1.5)
+
+
+def test_partial_back_alignment_scales_with_back_weight() -> None:
+    """At 135° (partially back-aligned), cos_delta = -√2/2. With
+    back_weight=0.3, alignment = 0.3 × √2/2."""
+    term = BallAlignmentReward(
+        inner_radius=0.044, outer_radius=0.10, back_weight=0.3
+    )
+    midpoint = 0.5 * (0.044 + 0.10)
+    ctx = _ctx_for(
+        robot_xy=(0.0, 0.0),
+        ball_xy=(midpoint, 0.0),
+        robot_theta=3.0 * math.pi / 4.0,
+    )
+    expected = 0.3 * (math.sqrt(2.0) / 2.0)
+    assert term(ctx) == pytest.approx(expected, abs=1e-6)
 
 
 def test_partial_alignment_scales_with_cos() -> None:

@@ -373,6 +373,48 @@ def test_opponent_view_does_not_mutate_input() -> None:
     np.testing.assert_array_equal(obs, snapshot)
 
 
+def test_last_opponent_action_starts_none_and_populates_after_step() -> None:
+    """The GIF eval callback reads `env.last_opponent_action` to render
+    the opponent's control panel. Pin the contract: None before any
+    step (so the panel falls back to zeros for the first frame), set
+    to the policy's raw output after step."""
+    def constant_opponent(_obs):
+        return np.array([0.6, -0.4], dtype=np.float32)
+
+    env = AtomTeamEnv(seed=0, opponent_policy=constant_opponent)
+    env.reset(seed=0)
+    assert env.last_opponent_action is None
+
+    env.step(np.zeros(2, dtype=np.float32))
+    assert env.last_opponent_action is not None
+    np.testing.assert_allclose(
+        env.last_opponent_action, np.array([0.6, -0.4], dtype=np.float32)
+    )
+
+    # Reset clears it again.
+    env.reset(seed=0)
+    assert env.last_opponent_action is None
+
+
+def test_manipulator_kwarg_attaches_pusher_polygon() -> None:
+    """`manipulator='default_pusher'` should load the JSON polygon and
+    attach it to BOTH robots in the team env. Default None ⟹ empty
+    manipulator_parts (bare body)."""
+    env_bare = AtomTeamEnv()
+    assert list(env_bare._robot_cfg.manipulator_parts) == []
+
+    env_pusher = AtomTeamEnv(manipulator="default_pusher")
+    parts = list(env_pusher._robot_cfg.manipulator_parts)
+    assert len(parts) == 1, f"expected 1 part, got {len(parts)}"
+    # default_pusher.json has a 4-vertex trapezoid.
+    assert len(parts[0]) == 4
+
+
+def test_manipulator_kwarg_unknown_name_raises() -> None:
+    with pytest.raises(FileNotFoundError, match="manipulator config not found"):
+        AtomTeamEnv(manipulator="this_pusher_does_not_exist")
+
+
 def test_opponent_canonical_turn_inverts_in_world() -> None:
     """An opponent policy emitting "+CCW in canonical view" (Ω=+1) should
     cause the opponent to turn CW in WORLD frame, since the action mirror

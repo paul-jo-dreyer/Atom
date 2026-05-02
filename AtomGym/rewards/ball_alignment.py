@@ -12,11 +12,15 @@ in positions where its body axis isn't pointed at (or away from) the
 ball direction.
 
 This term provides a small dense gradient in that regime: more aligned
-with the ball ⟹ slightly more reward. Aligned forwards (front-face
-toward ball) and aligned backwards (back-face toward ball) score
-identically — for this task, pushing through the back face is just as
-effective as the front face, and rewarding only one would create
-an asymmetric attractor with no physical justification.
+with the ball ⟹ slightly more reward. The shaping is **asymmetric** —
+front-aligned (front-face toward ball) earns the full reward, back-
+aligned earns a fraction (`back_weight`, default 0.3). Once a pusher
+is attached, the front face is mechanically advantaged for ball
+control, so the policy should prefer to approach front-first. Back-
+alignment still earns positive reward (not penalised) because awkward
+geometry sometimes forces it (e.g., the robot ends up between ball
+and own goal and must back-push to avoid scoring on itself). Setting
+`back_weight=1.0` recovers the original symmetric behaviour.
 
 Why this term ISN'T active during ball contact
 ----------------------------------------------
@@ -38,15 +42,17 @@ and peaking at 1.0 at the band midpoint:
               0                                   if d >= outer
               4 (d - inner)(outer - d)/(outer-inner)²   otherwise
 
-    alignment = |cos(θ_robot - atan2(by - ry, bx - rx))|
+    cos_delta = cos(θ_robot - atan2(by - ry, bx - rx))
+    alignment = max(0, cos_delta) + back_weight · max(0, -cos_delta)
 
     reward    = gate(d) * alignment
 
-So:
-    far from ball                     → 0  (other rewards do the work)
-    in contact                        → 0  (don't disrupt dribble)
-    mid-approach, body axis on ball   → ~1
-    mid-approach, perpendicular       →  0
+So with the default back_weight = 0.3:
+    far from ball                     → 0     (other rewards do the work)
+    in contact                        → 0     (don't disrupt dribble)
+    mid-approach, front toward ball   → ~1.0
+    mid-approach, back toward ball    → ~0.3
+    mid-approach, perpendicular       → 0
 
 Implementation note: the alignment is computed via dot product, not
 atan2. With robot forward = (cos θ, sin θ) and ball-direction unit
@@ -54,7 +60,7 @@ vector = ((bx-rx)/d, (by-ry)/d), the dot product is exactly cos(Δθ).
 Skipping atan2 avoids a transcendental in the inner reward loop.
 
 Use with a POSITIVE weight (e.g. weight=+0.3). The peak per-step
-contribution is `weight * 1.0` at the band midpoint with full
+contribution is `weight * 1.0` at the band midpoint with full FRONT
 alignment, well below the magnitude of BallProgressReward in active
 pushing scenarios.
 """
@@ -72,6 +78,7 @@ class BallAlignmentReward(RewardTerm):
         weight: float = 1.0,
         inner_radius: float = 0.044,
         outer_radius: float = 0.10,
+        back_weight: float = 0.3,
     ) -> None:
         """
         Parameters
@@ -89,6 +96,12 @@ class BallAlignmentReward(RewardTerm):
             roughly 1.5-2 chassis widths from the ball — past this, the
             existing distance / progress shaping is sufficient on its
             own.
+        back_weight
+            Multiplier applied when the robot is back-aligned to the
+            ball (cos_delta < 0). Default 0.3 ⟹ back-pushing earns 30%
+            of the reward front-pushing earns. Range: [0, 1]. 0 = no
+            reward for back alignment (still no penalty); 1 = original
+            symmetric behaviour.
         """
         super().__init__(weight=weight)
         if inner_radius < 0.0:
@@ -100,8 +113,13 @@ class BallAlignmentReward(RewardTerm):
                 f"outer_radius ({outer_radius}) must exceed "
                 f"inner_radius ({inner_radius})"
             )
+        if not 0.0 <= back_weight <= 1.0:
+            raise ValueError(
+                f"back_weight must be in [0, 1], got {back_weight}"
+            )
         self.inner_radius = float(inner_radius)
         self.outer_radius = float(outer_radius)
+        self.back_weight = float(back_weight)
         self._band_width_sq = (self.outer_radius - self.inner_radius) ** 2
 
     def __call__(self, ctx: RewardContext) -> float:
@@ -131,13 +149,19 @@ class BallAlignmentReward(RewardTerm):
 
         # Body-axis alignment via dot product of robot forward unit
         # vector with the ball-direction unit vector. cos(Δθ) directly,
-        # no atan2 needed. abs() so back-aligned and front-aligned score
-        # identically (back-pushing is as legitimate as front-pushing
-        # for this task).
-        # `dist > inner_radius >= 0` makes the divide safe.
+        # no atan2 needed. `dist > inner_radius >= 0` makes the divide
+        # safe.
         cos_th = v.self_cos_th(ctx.obs)
         sin_th = v.self_sin_th(ctx.obs)
         cos_delta = (cos_th * dx + sin_th * dy) / dist
-        alignment = abs(cos_delta)
+        # Asymmetric: front-aligned (cos_delta > 0) earns full reward,
+        # back-aligned earns `back_weight` × that. Continuous in
+        # cos_delta, with a kink at perpendicular (gradient changes from
+        # +1 to -back_weight). PPO doesn't differentiate through reward,
+        # so the kink is fine.
+        if cos_delta >= 0.0:
+            alignment = cos_delta
+        else:
+            alignment = self.back_weight * (-cos_delta)
 
         return gate * alignment

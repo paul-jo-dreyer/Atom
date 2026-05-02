@@ -111,6 +111,7 @@ class AtomTeamEnv(gym.Env):
         max_episode_steps: int = 800,
         seed: int | None = None,
         opponent_policy: OpponentPolicy | None = None,
+        manipulator: str | None = None,
     ) -> None:
         super().__init__()
         if physics_dt <= 0.0:
@@ -157,7 +158,7 @@ class AtomTeamEnv(gym.Env):
         self.goal_y_half = float(self.world.config.goal_y_half)
         self.goal_extension = float(self.world.config.goal_extension)
 
-        self._robot_cfg = AtomSoloEnv._make_robot_config()
+        self._robot_cfg = AtomSoloEnv._make_robot_config(manipulator=manipulator)
         self.robot = sim_py.Robot(self.world, self._robot_cfg)
         self.opponent = sim_py.Robot(self.world, self._robot_cfg)
 
@@ -175,6 +176,12 @@ class AtomTeamEnv(gym.Env):
         self._prev_action: np.ndarray | None = None
         self._ball_in_opp_goal_prev: bool = False
         self._ball_in_own_goal_prev: bool = False
+        # Last action emitted by the opponent's policy (canonical-frame
+        # (V, Ω) in [-1, +1]). Public attribute so external observers
+        # (e.g. GIF eval callback) can render the opponent's control
+        # indicator instead of hardcoding zeros. None before the first
+        # step of an episode; reset on every reset().
+        self.last_opponent_action: np.ndarray | None = None
 
         self._rng = np.random.default_rng(seed)
 
@@ -247,6 +254,7 @@ class AtomTeamEnv(gym.Env):
         self._prev_action = None
         self._ball_in_opp_goal_prev = False
         self._ball_in_own_goal_prev = False
+        self.last_opponent_action = None
         return self._build_learner_obs(), {}
 
     def step(
@@ -277,6 +285,11 @@ class AtomTeamEnv(gym.Env):
                 f"opponent_policy returned action with shape {opp_action.shape}; "
                 f"expected (2,)"
             )
+        # Stash before mirroring so external readers (GIF eval) see the
+        # canonical-frame (V, Ω) — that's what the policy emitted, and
+        # the team team's control panel renders raw policy output for
+        # both robots symmetrically.
+        self.last_opponent_action = opp_action.copy()
         vL_o, vR_o = action_to_wheel_cmds(
             float(opp_action[0]), float(opp_action[1]),
             max_wheel_speed=V_MAX_DEFAULT, track_width=TRACK_WIDTH_DEFAULT,

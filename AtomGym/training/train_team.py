@@ -102,6 +102,7 @@ def make_l2_env(
     obstacle_contact_penalty: float = 0.5,
     ball_alignment: float = 0.3,
     static_field_penalty: float = 0.0,
+    manipulator: str | None = None,
 ) -> AtomTeamEnv:
     """Construct a Level-2 (1v1) env with the agreed reward composition.
     Mirrors `make_l1_env` from train.py — same reward weights, same
@@ -140,6 +141,7 @@ def make_l2_env(
         control_dt=1.0 / 30.0,
         max_episode_steps=max_episode_steps,
         seed=seed,
+        manipulator=manipulator,
     )
 
 
@@ -152,6 +154,7 @@ def _make_team_worker(
     obstacle_contact_penalty: float,
     ball_alignment: float,
     static_field_penalty: float,
+    manipulator: str | None,
 ) -> TeamWorkerWrapper:
     """Per-worker factory: builds AtomTeamEnv + OpponentRunner + wrapper.
 
@@ -166,6 +169,7 @@ def _make_team_worker(
         obstacle_contact_penalty=obstacle_contact_penalty,
         ball_alignment=ball_alignment,
         static_field_penalty=static_field_penalty,
+        manipulator=manipulator,
     )
     runner = OpponentRunner(
         observation_space=team_env.observation_space,
@@ -188,6 +192,7 @@ def make_vec_env(
     obstacle_contact_penalty: float,
     ball_alignment: float,
     static_field_penalty: float,
+    manipulator: str | None,
 ) -> VecEnv:
     factories = [
         (
@@ -201,6 +206,7 @@ def make_vec_env(
                     obstacle_contact_penalty=obstacle_contact_penalty,
                     ball_alignment=ball_alignment,
                     static_field_penalty=static_field_penalty,
+                    manipulator=manipulator,
                 )
             )
         )
@@ -245,6 +251,17 @@ def main() -> None:
         "obstacle-contact penalty per second of saturated proximity. "
         "0 disables. Edit StaticFieldPenalty class defaults to retune "
         "geometry / sigmoid params.",
+    )
+    parser.add_argument(
+        "--manipulator",
+        type=str,
+        default=None,
+        help="Name of a manipulator (pusher) config attached to BOTH "
+        "robots, looked up at AtomSim/sim/configs/manipulators/<name>.json. "
+        "Default None ⟹ bare-body geometry. Common values: "
+        "'default_pusher', 'sidewall_pusher'. Changes action-consequence "
+        "dynamics, so checkpoints are not interchangeable across "
+        "manipulator settings.",
     )
     parser.add_argument("--checkpoint-every", type=int, default=50_000)
     parser.add_argument("--disable-reward-breakdown", action="store_true")
@@ -345,6 +362,7 @@ def main() -> None:
         obstacle_contact_penalty=args.obstacle_contact_penalty,
         ball_alignment=args.ball_alignment,
         static_field_penalty=args.static_field_penalty,
+        manipulator=args.manipulator,
     )
 
     # Master pool + reference + tracker. Live on main; workers see only
@@ -377,6 +395,10 @@ def main() -> None:
             batch_size=args.batch_size,
             ent_coef=args.ent_coef,
             tensorboard_log=str(tb_dir),
+            # CPU is faster than GPU for our MLP size — see PPO()
+            # below. Pin on resume too so a checkpoint saved on GPU
+            # doesn't drag training back onto the slower path.
+            device="cpu",
             # Explicit verbose=1 — guarantees SB3's stdout tabular
             # output (rollout/, train/, time/) shows after resume.
             verbose=1,
@@ -414,6 +436,14 @@ def main() -> None:
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=args.ent_coef,
+            # Force CPU. At our network size (128×128 MLP, 18-d obs)
+            # the per-kernel-launch latency on GPU dwarfs the actual
+            # compute (<100k FLOPs per forward pass), AND we'd pay for
+            # PCIe traffic shipping rollout buffers. CPU is ~1.5-3×
+            # faster for MLP PPO at this scale, and matches the
+            # OpponentRunner's CPU shadow policies in workers — whole
+            # stack stays on one device.
+            device="cpu",
             verbose=1,
             tensorboard_log=str(tb_dir),
             seed=args.seed,
@@ -443,6 +473,7 @@ def main() -> None:
                 obstacle_contact_penalty=args.obstacle_contact_penalty,
                 ball_alignment=args.ball_alignment,
                 static_field_penalty=args.static_field_penalty,
+                manipulator=args.manipulator,
             ),
             pool=pool,
             reference=reference,
@@ -477,6 +508,7 @@ def main() -> None:
                 obstacle_contact_penalty=args.obstacle_contact_penalty,
                 ball_alignment=args.ball_alignment,
                 static_field_penalty=args.static_field_penalty,
+                manipulator=args.manipulator,
             )
             env.set_opponent_policy(reference.predict)
             return env
