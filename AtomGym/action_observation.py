@@ -18,16 +18,21 @@ discontinuities.
 
 **Observation** layout (all entries in [-1, 1] after normalization):
 
-    [ ball (4) | self (7) | other_0 (7) | other_1 (7) | ... ]
+    [ ball (4) | self (8) | other_0 (8) | other_1 (8) | ... ]
 
 - ball:  (px, py, vx, vy)
-- robot: (px, py, sin θ, cos θ, dx, dy, dθ) — sin/cos to avoid the wraparound
-  discontinuity at θ=0/2π. dx, dy are world-frame velocities (computed from
-  the body-frame v in the sim's 5D state). dθ = ω.
+- robot: (px, py, sin θ, cos θ, dx, dy, dθ, time_in_box) — sin/cos to avoid
+  the wraparound discontinuity at θ=0/2π. dx, dy are world-frame velocities
+  (computed from the body-frame v in the sim's 5D state). dθ = ω.
+  `time_in_box` is the fraction of `goalie_box_terminal_time` the robot has
+  spent continuously inside ITS OPPOSING goalie box this visit. 0.0 = not
+  in box / fresh entry; 1.0 = at the violation threshold. Resets to 0 on
+  box exit. Always present in the obs (reads 0 when the rule is disabled).
 
 Positions normalised by field half-extents; robot velocities by `V_MAX`
 and `OMEGA_MAX`; ball velocities by `V_BALL_MAX`. Out-of-range values are
-clipped to [-1, 1].
+clipped to [-1, 1]. `time_in_box` is clipped to [0, 1] (it's
+non-negative and capped at terminal by construction).
 
 **Mirror** (for self-play): when one team naturally attacks +x and the
 other attacks −x, the same policy plays both sides if we present a
@@ -63,7 +68,7 @@ V_BALL_MAX: float = 5.0
 
 # Block dimensions in the observation vector.
 BALL_BLOCK_DIM: int = 4
-ROBOT_BLOCK_DIM: int = 7
+ROBOT_BLOCK_DIM: int = 8
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +113,7 @@ def sincos_from_theta(theta: float) -> tuple[float, float]:
 
 
 class ObsView:
-    """Schema + accessor for observation arrays of shape (4 + 7·n_robots,).
+    """Schema + accessor for observation arrays of shape (4 + 8·n_robots,).
 
     Exposes block slices, block-view accessors, and named scalar field
     accessors. See module-level docstring for the observation layout.
@@ -220,6 +225,11 @@ class ObsView:
     def self_dth(self, arr: np.ndarray) -> float:
         return float(arr[BALL_BLOCK_DIM + 6])
 
+    def self_time_in_box(self, arr: np.ndarray) -> float:
+        """Fraction of the goalie-box budget the robot has used continuously
+        in its OPPOSING box this visit. 0.0 = not in box; 1.0 = at terminal."""
+        return float(arr[BALL_BLOCK_DIM + 7])
+
     def self_xy(self, arr: np.ndarray) -> np.ndarray:
         """Returns a numpy VIEW into `arr` — writes mutate the source. The
         2-element world-frame position [px, py] of self."""
@@ -259,6 +269,10 @@ class ObsView:
 
     def other_dth(self, arr: np.ndarray, idx: int) -> float:
         return float(arr[self.other_slice(idx).start + 6])
+
+    def other_time_in_box(self, arr: np.ndarray, idx: int) -> float:
+        """Fraction of the goalie-box budget the other robot has used."""
+        return float(arr[self.other_slice(idx).start + 7])
 
     def other_xy(self, arr: np.ndarray, idx: int) -> np.ndarray:
         """Returns a numpy VIEW into `arr` — writes mutate the source. The
@@ -357,10 +371,15 @@ def _encode_robot(
     v_max: float,
     omega_max: float,
     mirror: bool,
+    time_in_box_norm: float = 0.0,
 ) -> np.ndarray:
     """state_5d is sim_py's robot.state: (5,) [px, py, theta, v, omega].
     `v` is body-frame longitudinal velocity (m/s); we convert to world-frame
-    (dx, dy) for the obs."""
+    (dx, dy) for the obs.
+
+    `time_in_box_norm` is the robot's pre-normalised goalie-box timer in
+    [0, 1] (0 = not in box, 1 = at terminal violation threshold). Mirror-
+    invariant — it's a scalar count, not a coordinate."""
     px = float(state_5d[0])
     py = float(state_5d[1])
     theta = float(state_5d[2])
@@ -390,6 +409,7 @@ def _encode_robot(
             _clip_norm(dx_world, v_max),
             _clip_norm(dy_world, v_max),
             _clip_norm(omega, omega_max),
+            float(np.clip(time_in_box_norm, 0.0, 1.0)),
         ],
         dtype=np.float32,
     )
@@ -410,6 +430,8 @@ def build_observation(
     mirror: bool = False,
     v_max: float = V_MAX_DEFAULT,
     omega_max: float = OMEGA_MAX_DEFAULT,
+    self_time_in_box_norm: float = 0.0,
+    others_time_in_box_norm: Sequence[float] = (),
 ) -> np.ndarray:
     """Build a normalized observation vector.
 
@@ -428,18 +450,32 @@ def build_observation(
         −x goal (so we present a canonical "I attack +x" view to the policy).
     v_max, omega_max
         Robot velocity normalization scales. Defaults match the platform.
+    self_time_in_box_norm
+        Self's goalie-box timer in [0, 1]. Default 0 (rule-disabled / fresh
+        episode). The env passes its tracked value here.
+    others_time_in_box_norm
+        Same, for each other robot in `others_states_5d` order. If shorter
+        than `others_states_5d`, missing entries default to 0.
 
     Returns
     -------
-    np.ndarray, shape (4 + 7·N,), dtype float32
+    np.ndarray, shape (4 + 8·N,), dtype float32
         Where N = 1 + len(others_states_5d).
     """
     parts: list[np.ndarray] = [
         _encode_ball(ball_state, field_x_half, field_y_half, mirror),
-        _encode_robot(self_state_5d, field_x_half, field_y_half, v_max, omega_max, mirror),
+        _encode_robot(
+            self_state_5d, field_x_half, field_y_half, v_max, omega_max, mirror,
+            time_in_box_norm=self_time_in_box_norm,
+        ),
     ]
-    for s in others_states_5d:
-        parts.append(_encode_robot(s, field_x_half, field_y_half, v_max, omega_max, mirror))
+    others_t = list(others_time_in_box_norm)
+    for i, s in enumerate(others_states_5d):
+        t = others_t[i] if i < len(others_t) else 0.0
+        parts.append(
+            _encode_robot(s, field_x_half, field_y_half, v_max, omega_max, mirror,
+                          time_in_box_norm=t)
+        )
     return np.concatenate(parts).astype(np.float32, copy=False)
 
 

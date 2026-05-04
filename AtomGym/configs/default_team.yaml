@@ -1,0 +1,36 @@
+# Team (1v1 self-play) PPO training config — defaults match the legacy
+# `train_team.py` CLI defaults.
+#
+# Schema: see `AtomGym/training/config.py`.
+
+env:
+  max_episode_steps: 400
+  goalie_box_depth: 0.12
+  goalie_box_y_half: 0.10
+  goalie_box_terminal_time: 0.0
+  manipulator: null
+
+rewards:
+  ball_progress:
+    weight: 1.0
+  distance_to_ball:
+    weight: -0.5
+  goal_scored:
+    weight: 50.0
+  stall_penalty:
+    weight: -0.3
+  obstacle_contact:
+    weight: -0.5
+  ball_alignment:
+    weight: 0.3
+
+  # Disabled by default. Enable WITH `env.goalie_box_terminal_time > 0`.
+  # goalie_box:
+  #   weight: -50.0
+  #   trigger_time: 2.0
+  #   terminal_time: 3.0
+  #   power: 3.0
+  #   termination_penalty: 1.0
+  #   depth_saturation: 0.06
+  #   goalie_box_depth: 0.12
+  #   goalie_box_y_half: 0.10

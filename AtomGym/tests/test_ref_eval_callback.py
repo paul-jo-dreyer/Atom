@@ -19,7 +19,7 @@ from AtomGym.training.snapshot_pool import Snapshot, SnapshotPool
 from AtomGym.training.win_rate_tracker import Outcome, WinRateTracker
 
 
-_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(18,), dtype=np.float32)
+_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(20,), dtype=np.float32)
 _ACT_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(2,), dtype=np.float32)
 _POLICY_KWARGS: dict[str, Any] = dict(
     net_arch=dict(pi=[128, 128], vf=[128, 128]),

@@ -1,9 +1,20 @@
-"""Train a 1v1 self-play PPO policy on AtomTeamEnv (Level 2).
+"""Train a 1v1 self-play PPO policy on AtomTeamEnv using a SHARED-MEMORY
+vec env (`gymnasium.vector.AsyncVectorEnv` via `GymAsyncVecEnv`),
+instead of SB3's `SubprocVecEnv`.
+
+This is the team analogue of `train_async.py`. The motivation is
+**memory**, not throughput — the solo benchmarks showed AsyncVec is
+roughly throughput-tied with SubprocVec, but uses ~5× less memory per
+worker. For team training that matters more, because each worker
+carries `torch + sim_py + numpy + OpponentRunner shadow policy`
+(~600 MB on the SubprocVec path) — under the existing 60% RAM cap on
+this machine that puts the n_envs ceiling around 12-15. AsyncVec may
+let us comfortably train at n_envs=20+ for team play.
 
 Usage (from repo root, venv active):
 
-    .venv/bin/python -m AtomGym.training.train_team --run-name l2_baseline \
-        --n-envs 16 --use-subproc
+    .venv/bin/python -m AtomGym.training.train_team_async --run-name l2_async \
+        --n-envs 20
 
 What this script does
 ---------------------
@@ -46,6 +57,29 @@ Outputs land under `training_runs/<run_name>/`:
 
 from __future__ import annotations
 
+# IMPORTANT: env vars below MUST be set before numpy / torch / sim_py
+# are imported anywhere. They cap each worker's BLAS thread pool to a
+# single thread.
+#
+# Why this is required for team_async (and not solo_async): team
+# workers each carry an `OpponentRunner` with a CPU torch shadow
+# policy. Under gymnasium's AsyncVectorEnv spawn protocol, torch's
+# intra-op thread pool can DEADLOCK at first use in a worker (workers
+# block in `futex_wait_queue` while main blocks in
+# `unix_stream_data_wait` — observed live during smoke testing).
+# Capping threads to 1 sidesteps the issue. Solo workers don't import
+# torch so they don't trip it.
+#
+# Main process gets full BLAS multi-threading restored explicitly via
+# `torch.set_num_threads(...)` in `main()` below — needed for fast
+# PPO update phase. setdefault() lets a user-set env var override.
+import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import argparse
 import sys
 from pathlib import Path
@@ -59,17 +93,18 @@ if str(_REPO_ROOT) not in sys.path:
 from stable_baselines3 import PPO  # noqa: E402
 from stable_baselines3.common.callbacks import CheckpointCallback  # noqa: E402
 from stable_baselines3.common.monitor import Monitor  # noqa: E402
-from stable_baselines3.common.vec_env import (  # noqa: E402
-    DummyVecEnv,
-    SubprocVecEnv,
-    VecEnv,
-)
+from stable_baselines3.common.vec_env import VecEnv  # noqa: E402
 
 from AtomGym.environments import AtomTeamEnv, InitialStateRanges  # noqa: E402
-from AtomGym.rewards import RewardTerm  # noqa: E402
-from AtomGym.training.config import (  # noqa: E402
-    TrainingConfig,
-    load_training_config,
+from AtomGym.training._async_vec_env import GymAsyncVecEnv  # noqa: E402
+from AtomGym.rewards import (  # noqa: E402
+    BallAlignmentReward,
+    BallProgressReward,
+    DistanceToBallReward,
+    GoalScoredReward,
+    ObstacleContactPenalty,
+    StallPenaltyReward,
+    StaticFieldPenalty,
 )
 from AtomGym.training.gif_eval_callback import GifEvalCallback  # noqa: E402
 from AtomGym.training._shadow_policy import state_dict_to_numpy  # noqa: E402
@@ -82,11 +117,8 @@ from AtomGym.training.team_worker_wrapper import TeamWorkerWrapper  # noqa: E402
 from AtomGym.training.train import (  # noqa: E402
     RewardBreakdownCallback,
     _parse_grid,
-    _term_kwargs,
 )
 from AtomGym.training.win_rate_tracker import WinRateTracker  # noqa: E402
-
-_DEFAULT_CONFIG_PATH = _REPO_ROOT / "AtomGym" / "configs" / "default_team.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -96,31 +128,51 @@ _DEFAULT_CONFIG_PATH = _REPO_ROOT / "AtomGym" / "configs" / "default_team.yaml"
 
 def make_l2_env(
     seed: int = 0,
-    rewards: list[RewardTerm] | None = None,
-    env_kwargs: dict[str, Any] | None = None,
+    max_episode_steps: int = 400,
+    stall_penalty: float = 0.3,
+    obstacle_contact_penalty: float = 0.5,
+    ball_alignment: float = 0.3,
+    static_field_penalty: float = 0.0,
+    manipulator: str | None = None,
 ) -> AtomTeamEnv:
-    """Construct a Level-2 (1v1) env. Reward composition + env shaping
-    params come from a `TrainingConfig` (see `config.py`); this factory
-    just merges the per-worker `seed` in.
-
-    See `make_l1_env` in train.py for parameter semantics — the two
-    factories are deliberately structurally identical so a solo-trained
-    policy transfers cleanly via weight expansion."""
-    rewards = list(rewards) if rewards is not None else []
-    base_kwargs: dict[str, Any] = {
-        "physics_dt": 1.0 / 60.0,
-        "control_dt": 1.0 / 30.0,
-    }
-    if env_kwargs is not None:
-        base_kwargs.update(env_kwargs)
+    """Construct a Level-2 (1v1) env with the agreed reward composition.
+    Mirrors `make_l1_env` from train.py — same reward weights, same
+    init-state DR — so a solo-trained policy transfers cleanly via
+    weight transfer (step 7) without reward shifts confusing the
+    objective."""
+    rewards: list = [
+        BallProgressReward(weight=1.0),
+        DistanceToBallReward(weight=-0.5),
+        GoalScoredReward(weight=50.0),
+    ]
+    if stall_penalty > 0.0:
+        rewards.append(StallPenaltyReward(weight=-stall_penalty))
+    if obstacle_contact_penalty > 0.0:
+        # Now also penalises robot-robot contact (CATEGORY_ROBOT is in
+        # _OBSTACLE_CATEGORIES) — useful in 1v1 to discourage purely
+        # defensive collision strategies.
+        rewards.append(ObstacleContactPenalty(weight=-obstacle_contact_penalty))
+    if ball_alignment > 0.0:
+        rewards.append(BallAlignmentReward(weight=ball_alignment))
+    if static_field_penalty > 0.0:
+        # Anticipatory shaping for collision-free motion + opposing
+        # goalie-box rule (penalty 0 at box edge, ramps with intrusion).
+        # Geometry + sigmoid params live in StaticFieldPenalty's class
+        # defaults; edit there to retune. Each subproc builds its own
+        # grid in __init__ — the cost is ~ms, dwarfed by torch + sim_py
+        # imports each worker already pays.
+        rewards.append(StaticFieldPenalty(weight=-static_field_penalty))
     init_ranges = InitialStateRanges(
         ball_speed=(0.0, 0.3),
     )
     return AtomTeamEnv(
         rewards=rewards,
         init_state_ranges=init_ranges,
+        physics_dt=1.0 / 60.0,
+        control_dt=1.0 / 30.0,
+        max_episode_steps=max_episode_steps,
         seed=seed,
-        **base_kwargs,
+        manipulator=manipulator,
     )
 
 
@@ -128,7 +180,12 @@ def _make_team_worker(
     seed: int,
     policy_kwargs: dict[str, Any],
     eps_latest: float,
-    config: TrainingConfig,
+    max_episode_steps: int,
+    stall_penalty: float,
+    obstacle_contact_penalty: float,
+    ball_alignment: float,
+    static_field_penalty: float,
+    manipulator: str | None,
 ) -> TeamWorkerWrapper:
     """Per-worker factory: builds AtomTeamEnv + OpponentRunner + wrapper.
 
@@ -136,11 +193,14 @@ def _make_team_worker(
     OpponentRunner's torch import + CPU shadow policy live in the
     worker's address space. Main process never imports torch on the
     workers' behalf."""
-    rewards = [type(r)(**_term_kwargs(r, config)) for r in config.rewards]
     team_env = make_l2_env(
         seed=seed,
-        rewards=rewards,
-        env_kwargs=config.env_kwargs,
+        max_episode_steps=max_episode_steps,
+        stall_penalty=stall_penalty,
+        obstacle_contact_penalty=obstacle_contact_penalty,
+        ball_alignment=ball_alignment,
+        static_field_penalty=static_field_penalty,
+        manipulator=manipulator,
     )
     runner = OpponentRunner(
         observation_space=team_env.observation_space,
@@ -155,11 +215,30 @@ def _make_team_worker(
 def make_vec_env(
     n_envs: int,
     base_seed: int,
-    use_subproc: bool,
+    use_subproc: bool,  # accepted for CLI parity with train_team.py; ignored
     policy_kwargs: dict[str, Any],
     eps_latest: float,
-    config: TrainingConfig,
+    max_episode_steps: int,
+    stall_penalty: float,
+    obstacle_contact_penalty: float,
+    ball_alignment: float,
+    static_field_penalty: float,
+    manipulator: str | None,
 ) -> VecEnv:
+    """Build a shared-memory vec env via `GymAsyncVecEnv`.
+
+    `use_subproc` is accepted for CLI parity but does nothing —
+    train_team_async is always shared-memory async/multiprocess.
+
+    Note on `env_method('update_opponent_pool', pool)`: this call
+    (issued by `PoolSyncCallback` every snapshot boundary) traverses
+    the adapter → `gymnasium.AsyncVectorEnv.call('update_opponent_pool', pool)`
+    → each worker's `TeamWorkerWrapper.update_opponent_pool(pool)`.
+    The pool is pickled across the IPC; SnapshotPool stores numpy
+    arrays (not torch tensors — see CLAUDE.md re: FD leak), so it
+    pickles cheaply with no FD churn.
+    """
+    del use_subproc
     factories = [
         (
             lambda i=i: Monitor(
@@ -167,15 +246,18 @@ def make_vec_env(
                     seed=base_seed + i,
                     policy_kwargs=policy_kwargs,
                     eps_latest=eps_latest,
-                    config=config,
+                    max_episode_steps=max_episode_steps,
+                    stall_penalty=stall_penalty,
+                    obstacle_contact_penalty=obstacle_contact_penalty,
+                    ball_alignment=ball_alignment,
+                    static_field_penalty=static_field_penalty,
+                    manipulator=manipulator,
                 )
             )
         )
         for i in range(n_envs)
     ]
-    if use_subproc and n_envs > 1:
-        return SubprocVecEnv(factories)
-    return DummyVecEnv(factories)
+    return GymAsyncVecEnv(factories, shared_memory=True)
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +278,33 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--n-steps", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--max-episode-steps", type=int, default=400)
     parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--log-std-init", type=float, default=0.0)
+    parser.add_argument("--stall-penalty", type=float, default=0.3)
+    parser.add_argument("--obstacle-contact-penalty", type=float, default=0.5)
+    parser.add_argument("--ball-alignment", type=float, default=0.3)
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=_DEFAULT_CONFIG_PATH,
-        help="Path to a YAML training config (reward weights + env "
-        f"shaping). Default: {_DEFAULT_CONFIG_PATH}. Schema: see "
-        "AtomGym/training/config.py.",
+        "--static-field-penalty",
+        type=float,
+        default=0.0,
+        help="Weight (positive magnitude) on the StaticFieldPenalty term — "
+        "anticipatory shaping for walls + opposing goalie box. Per-step "
+        "value is bounded in [0, 1]; weight is comparable to the "
+        "obstacle-contact penalty per second of saturated proximity. "
+        "0 disables. Edit StaticFieldPenalty class defaults to retune "
+        "geometry / sigmoid params.",
+    )
+    parser.add_argument(
+        "--manipulator",
+        type=str,
+        default=None,
+        help="Name of a manipulator (pusher) config attached to BOTH "
+        "robots, looked up at AtomSim/sim/configs/manipulators/<name>.json. "
+        "Default None ⟹ bare-body geometry. Common values: "
+        "'default_pusher', 'sidewall_pusher'. Changes action-consequence "
+        "dynamics, so checkpoints are not interchangeable across "
+        "manipulator settings.",
     )
     parser.add_argument("--checkpoint-every", type=int, default=50_000)
     parser.add_argument("--disable-reward-breakdown", action="store_true")
@@ -279,20 +379,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Load + validate the YAML config up-front.
-    config = load_training_config(args.config)
-    print(f"[train_team] loaded config: {args.config}")
-    print(f"[train_team] rewards: {[t.name for t in config.rewards]}")
-    print(f"[train_team] env_kwargs: {config.env_kwargs}")
-
     # Output directories
     output_dir = args.output_root / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     tb_dir = output_dir / "tensorboard"
     ckpt_dir = output_dir / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
-    # Pin the resolved config alongside the run artefacts.
-    (output_dir / "config.yaml").write_text(args.config.read_text())
 
     # Architecture spec — shared between learner, every worker's runner,
     # and the reference opponent.
@@ -302,14 +394,33 @@ def main() -> None:
     )
 
     # Vec env — each worker holds its own OpponentRunner + CPU shadow.
+    # CRITICAL ORDERING: workers/forkserver must inherit
+    # `torch.get_num_threads() == 1` from the main process at the
+    # moment they're spawned. Otherwise team workers deadlock on first
+    # use of the shadow policy (`futex_wait_queue` in the worker,
+    # `unix_stream_data_wait` in main — observed live during testing).
+    # We bump main's torch threads back up AFTER the vec env is built
+    # so the forkserver's snapshot is still single-threaded but main's
+    # PPO update gets multi-threaded BLAS.
     vec_env = make_vec_env(
         n_envs=args.n_envs,
         base_seed=args.seed,
         use_subproc=args.use_subproc,
         policy_kwargs=policy_kwargs,
         eps_latest=args.eps_latest,
-        config=config,
+        max_episode_steps=args.max_episode_steps,
+        stall_penalty=args.stall_penalty,
+        obstacle_contact_penalty=args.obstacle_contact_penalty,
+        ball_alignment=args.ball_alignment,
+        static_field_penalty=args.static_field_penalty,
+        manipulator=args.manipulator,
     )
+
+    import torch
+    _MAIN_TORCH_THREADS = 8
+    torch.set_num_threads(_MAIN_TORCH_THREADS)
+    print(f"[train_team] main torch.set_num_threads({_MAIN_TORCH_THREADS}) "
+          f"(workers stay at 1 via OMP env, see top of file)")
 
     # Master pool + reference + tracker. Live on main; workers see only
     # pool replicas pushed via env_method.
@@ -414,8 +525,12 @@ def main() -> None:
         RefEvalCallback(
             eval_env_factory=lambda: make_l2_env(
                 seed=args.seed + 10_000,  # eval RNG separated from training
-                rewards=[type(r)(**_term_kwargs(r, config)) for r in config.rewards],
-                env_kwargs=config.env_kwargs,
+                max_episode_steps=args.max_episode_steps,
+                stall_penalty=args.stall_penalty,
+                obstacle_contact_penalty=args.obstacle_contact_penalty,
+                ball_alignment=args.ball_alignment,
+                static_field_penalty=args.static_field_penalty,
+                manipulator=args.manipulator,
             ),
             pool=pool,
             reference=reference,
@@ -445,8 +560,12 @@ def main() -> None:
         def _make_gif_eval_env() -> AtomTeamEnv:
             env = make_l2_env(
                 seed=args.render_eval_seed,
-                rewards=[type(r)(**_term_kwargs(r, config)) for r in config.rewards],
-                env_kwargs=config.env_kwargs,
+                max_episode_steps=args.max_episode_steps,
+                stall_penalty=args.stall_penalty,
+                obstacle_contact_penalty=args.obstacle_contact_penalty,
+                ball_alignment=args.ball_alignment,
+                static_field_penalty=args.static_field_penalty,
+                manipulator=args.manipulator,
             )
             env.set_opponent_policy(reference.predict)
             return env
@@ -478,17 +597,22 @@ def main() -> None:
     else:
         print(f"[train_team] total timesteps : {args.total_timesteps:,}")
     print(
-        f"[train_team] n_envs          : {args.n_envs} "
-        f"({'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'})"
+        f"[train_team] n_envs          : {args.n_envs} (GymAsyncVecEnv shared-memory)"
     )
     print(f"[train_team] policy net      : 2x128 MLP")
-    print(f"[train_team] config          : {args.config}")
-    print(f"[train_team] reward terms    : {[t.name for t in config.rewards]}")
-    print(f"[train_team] env kwargs      : {config.env_kwargs}")
+    print(f"[train_team] episode steps   : {args.max_episode_steps}")
     print(
         f"[train_team] exploration     : ent_coef={args.ent_coef}  "
         f"log_std_init={args.log_std_init}"
     )
+    if args.stall_penalty > 0:
+        print(f"[train_team] stall penalty   : weight=-{args.stall_penalty}")
+    if args.obstacle_contact_penalty > 0:
+        print(
+            f"[train_team] obstacle pen.   : weight=-{args.obstacle_contact_penalty}"
+        )
+    if args.ball_alignment > 0:
+        print(f"[train_team] ball alignment  : weight=+{args.ball_alignment}")
     print(
         f"[train_team] pool            : capacity={args.pool_capacity}, "
         f"snapshot every {args.snapshot_every:,} steps, "

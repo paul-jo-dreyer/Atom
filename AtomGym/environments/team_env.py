@@ -7,9 +7,9 @@ self-play machinery lives outside the env: it samples a snapshot, wraps
 it as a callable, and assigns it via `set_opponent_policy()` at episode
 boundaries.
 
-Observation layout (learner's perspective, world-frame, 18 dims):
+Observation layout (learner's perspective, world-frame, 20 dims):
 
-    [ball (4) | self/learner (7) | opp (7)]
+    [ball (4) | self/learner (8) | opp (8)]
 
 Per CLAUDE.md, the canonical "my team in slots 0..N-1" view is achieved
 by re-indexing this same vector for the opponent's perspective rather
@@ -74,7 +74,11 @@ import sim_py  # noqa: E402  — sys.path was set up by solo_env import above
 # rebuild from raw sim state.
 _BALL_MIRROR_MASK = np.array([-1.0, 1.0, -1.0, 1.0], dtype=np.float32)
 # Robot block layout: [px, py, sin θ, cos θ, dx, dy, ω]
-_ROBOT_MIRROR_MASK = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0], dtype=np.float32)
+_ROBOT_MIRROR_MASK = np.array(
+    [-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0], dtype=np.float32
+)
+# Last entry is `time_in_box` — a scalar count, not a coordinate, so
+# mirror-invariant (multiplied by +1.0).
 
 
 # Type alias for the opponent policy hook. Takes the opponent's observation
@@ -112,7 +116,15 @@ class AtomTeamEnv(gym.Env):
         seed: int | None = None,
         opponent_policy: OpponentPolicy | None = None,
         manipulator: str | None = None,
+        goalie_box_depth: float = 0.12,
+        goalie_box_y_half: float = 0.10,
+        goalie_box_terminal_time: float = 0.0,
     ) -> None:
+        """See `AtomSoloEnv` for parameter documentation. The
+        `goalie_box_*` knobs work identically — each robot's timer
+        counts time spent in ITS opposing box (learner: +x box;
+        opponent: -x box). When `goalie_box_terminal_time == 0`, the
+        rule is disabled."""
         super().__init__()
         if physics_dt <= 0.0:
             raise ValueError(f"physics_dt must be > 0, got {physics_dt}")
@@ -129,6 +141,19 @@ class AtomTeamEnv(gym.Env):
         self.control_dt = control_dt
         self.action_repeat = action_repeat
         self.max_episode_steps = max_episode_steps
+        if goalie_box_depth < 0.0 or goalie_box_y_half < 0.0:
+            raise ValueError(
+                f"goalie_box_depth ({goalie_box_depth}) and "
+                f"goalie_box_y_half ({goalie_box_y_half}) must be >= 0"
+            )
+        if goalie_box_terminal_time < 0.0:
+            raise ValueError(
+                f"goalie_box_terminal_time must be >= 0 (0 = rule disabled), "
+                f"got {goalie_box_terminal_time}"
+            )
+        self.goalie_box_depth = float(goalie_box_depth)
+        self.goalie_box_y_half = float(goalie_box_y_half)
+        self.goalie_box_terminal_time = float(goalie_box_terminal_time)
 
         self.reward_terms: list[RewardTerm] = (
             list(rewards) if rewards is not None else []
@@ -137,7 +162,7 @@ class AtomTeamEnv(gym.Env):
             init_state_ranges if init_state_ranges is not None else InitialStateRanges()
         )
 
-        # Two robots → ObsView(n_robots=2). Total dim = 4 + 7·2 = 18.
+        # Two robots → ObsView(n_robots=2). Total dim = 4 + 8·2 = 20.
         self.obs_view = ObsView(n_robots=2)
         self.action_view = ActionView()
 
@@ -176,6 +201,18 @@ class AtomTeamEnv(gym.Env):
         self._prev_action: np.ndarray | None = None
         self._ball_in_opp_goal_prev: bool = False
         self._ball_in_own_goal_prev: bool = False
+        # Episode-level latch: flips True the first substep ANY robot
+        # (learner OR opponent) touches the ball. Used by
+        # `GoalScoredReward` to suppress credit only for goals where the
+        # ball was never influenced by anyone — i.e. random-initial-velocity
+        # flings. Opponent-driven goals still credit the learner because
+        # the learner needs to learn defence. See `goal_scored.py`.
+        self._ball_touched: bool = False
+        # Per-visit goalie-box timers (seconds). Each robot's timer
+        # counts continuous time spent in ITS opposing box. Resets on
+        # box exit. Drives the GoalieBoxPenalty + termination rule.
+        self._self_time_in_opp_box: float = 0.0
+        self._opp_time_in_opp_box: float = 0.0
         # Last action emitted by the opponent's policy (canonical-frame
         # (V, Ω) in [-1, +1]). Public attribute so external observers
         # (e.g. GIF eval callback) can render the opponent's control
@@ -254,6 +291,9 @@ class AtomTeamEnv(gym.Env):
         self._prev_action = None
         self._ball_in_opp_goal_prev = False
         self._ball_in_own_goal_prev = False
+        self._ball_touched = False
+        self._self_time_in_opp_box = 0.0
+        self._opp_time_in_opp_box = 0.0
         self.last_opponent_action = None
         return self._build_learner_obs(), {}
 
@@ -301,6 +341,9 @@ class AtomTeamEnv(gym.Env):
         accumulated: dict[str, Any] = {
             "scored_for_us": False,
             "scored_against_us": False,
+            "box_violation": False,
+            "box_violation_self": False,
+            "box_violation_opp": False,
         }
         all_contacts: list[Any] = []  # learner's contact list — opponent's is ignored
         obstacle_contact_substeps = 0
@@ -327,8 +370,48 @@ class AtomTeamEnv(gym.Env):
                     ))
                     if c.other_category & _OBSTACLE_CATEGORIES:
                         substep_had_obstacle = True
+                    if c.other_category & sim_py.CATEGORY_BALL:
+                        self._ball_touched = True
                 if substep_had_obstacle:
                     obstacle_contact_substeps += 1
+
+            # Opponent's contacts: only consulted to update `_ball_touched`.
+            # We don't add them to `all_contacts` (that list feeds
+            # ObstacleContactPenalty for the LEARNER specifically) and we
+            # don't count them toward `obstacle_contact_substeps`. The only
+            # signal we extract is "did the opponent touch the ball this
+            # substep" — early-exit once we've already latched True.
+            if not self._ball_touched:
+                for c in self.opponent.contact_points():
+                    if c.other_category & sim_py.CATEGORY_BALL:
+                        self._ball_touched = True
+                        break
+
+            # Update goalie-box timers for both robots. Each robot's
+            # timer counts time spent in ITS opposing box: learner's is
+            # the +x box (it attacks +x); opponent's is the -x box.
+            # Rule disabled when `goalie_box_terminal_time == 0`.
+            if self.goalie_box_terminal_time > 0.0:
+                rx = float(self.robot.state[0])
+                ry = float(self.robot.state[1])
+                if self._is_in_opp_goalie_box(rx, ry, attacker_side="+x"):
+                    self._self_time_in_opp_box += self.physics_dt
+                else:
+                    self._self_time_in_opp_box = 0.0
+                ox = float(self.opponent.state[0])
+                oy = float(self.opponent.state[1])
+                if self._is_in_opp_goalie_box(ox, oy, attacker_side="-x"):
+                    self._opp_time_in_opp_box += self.physics_dt
+                else:
+                    self._opp_time_in_opp_box = 0.0
+                if self._self_time_in_opp_box >= self.goalie_box_terminal_time:
+                    accumulated["box_violation_self"] = True
+                    accumulated["box_violation"] = True
+                    self._self_time_in_opp_box = self.goalie_box_terminal_time
+                if self._opp_time_in_opp_box >= self.goalie_box_terminal_time:
+                    accumulated["box_violation_opp"] = True
+                    accumulated["box_violation"] = True
+                    self._opp_time_in_opp_box = self.goalie_box_terminal_time
 
             substep_info = self._detect_events()
             terminal_this_substep = False
@@ -336,6 +419,8 @@ class AtomTeamEnv(gym.Env):
                 if substep_info.get(key, False):
                     accumulated[key] = True
                     terminal_this_substep = True
+            if accumulated.get("box_violation", False):
+                terminal_this_substep = True
             if terminal_this_substep:
                 break
 
@@ -347,6 +432,7 @@ class AtomTeamEnv(gym.Env):
         info["obstacle_contact_frac"] = (
             obstacle_contact_substeps / n_substeps_run if n_substeps_run > 0 else 0.0
         )
+        info["ball_touched"] = self._ball_touched
 
         ctx = RewardContext(
             obs=obs,
@@ -368,6 +454,7 @@ class AtomTeamEnv(gym.Env):
         terminated = bool(
             info.get("scored_for_us", False)
             or info.get("scored_against_us", False)
+            or info.get("box_violation", False)
         )
         truncated = (self._step_count >= self.max_episode_steps) and not terminated
 
@@ -421,7 +508,33 @@ class AtomTeamEnv(gym.Env):
             mirror=False,
             v_max=V_MAX_DEFAULT,
             omega_max=OMEGA_MAX_DEFAULT,
+            self_time_in_box_norm=self._time_in_box_norm(self._self_time_in_opp_box),
+            others_time_in_box_norm=(
+                self._time_in_box_norm(self._opp_time_in_opp_box),
+            ),
         )
+
+    def _time_in_box_norm(self, elapsed: float) -> float:
+        """Normalise a per-robot timer (seconds) to [0, 1] using the
+        configured terminal time. Returns 0 when the rule is disabled."""
+        if self.goalie_box_terminal_time <= 0.0:
+            return 0.0
+        return min(elapsed / self.goalie_box_terminal_time, 1.0)
+
+    def _is_in_opp_goalie_box(
+        self, x: float, y: float, attacker_side: str
+    ) -> bool:
+        """Test whether a world-frame point falls inside the goalie box on
+        the side the attacker is attacking. `attacker_side="+x"` ⟹ box is
+        at +x (learner). `attacker_side="-x"` ⟹ box at -x (opponent)."""
+        if abs(y) > self.goalie_box_y_half:
+            return False
+        if attacker_side == "+x":
+            return self.field_x_half - self.goalie_box_depth <= x <= self.field_x_half
+        elif attacker_side == "-x":
+            return -self.field_x_half <= x <= -self.field_x_half + self.goalie_box_depth
+        else:
+            raise ValueError(f"attacker_side must be '+x' or '-x', got {attacker_side!r}")
 
     def opponent_view(self, learner_obs: np.ndarray) -> np.ndarray:
         """Convert a learner-perspective obs into the opponent's canonical

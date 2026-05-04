@@ -111,6 +111,7 @@ class StaticFieldPenalty(RewardTerm):
         unavoidable_dist: float = 0.035,
         grid_resolution: float = 0.005,
         penalize_own_box: bool = False,
+        include_goalie_box: bool = False,
     ) -> None:
         """
         Parameters
@@ -151,6 +152,14 @@ class StaticFieldPenalty(RewardTerm):
             If True, the own goalie box (at -x) is also a forbidden
             zone. Default False — the rule we're modelling is "don't
             enter the OPPOSING team's goalie box."
+        include_goalie_box
+            If True, the spatial goalie-box source is added to the
+            shaping field. **Default False** since the time-based
+            `GoalieBoxPenalty` (paired with the env's box-violation
+            termination rule) now handles box-rule shaping. This term
+            is then walls-only — anticipatory wall avoidance and
+            nothing else. Set True to keep the original
+            "wall + spatial goalie-box" composite, e.g. for ablation.
         """
         super().__init__(weight=weight)
         if not (0.0 < unavoidable_dist < safe_dist):
@@ -188,6 +197,7 @@ class StaticFieldPenalty(RewardTerm):
         self.unavoidable_dist = float(unavoidable_dist)
         self.grid_resolution = float(grid_resolution)
         self.penalize_own_box = bool(penalize_own_box)
+        self.include_goalie_box = bool(include_goalie_box)
 
         # Wall sigmoid params: hit ~0.99 at d=unavoidable, ~0.01 at
         # d=safe. ln(99) / half_band gives the steepness that lands
@@ -263,10 +273,15 @@ class StaticFieldPenalty(RewardTerm):
             self._sigmoid(d_top),
         )
 
-        opp_penalty = self._goalie_box_penalty(x, y, side=+1.0)
-        own_penalty = (
-            self._goalie_box_penalty(x, y, side=-1.0) if self.penalize_own_box else 0.0
-        )
+        if self.include_goalie_box:
+            opp_penalty = self._goalie_box_penalty(x, y, side=+1.0)
+            own_penalty = (
+                self._goalie_box_penalty(x, y, side=-1.0)
+                if self.penalize_own_box else 0.0
+            )
+        else:
+            opp_penalty = 0.0
+            own_penalty = 0.0
 
         return max(wall_penalty, opp_penalty, own_penalty)
 

@@ -150,7 +150,9 @@ def test_grid_corner_is_one() -> None:
 def test_grid_deep_inside_opposing_box_is_one() -> None:
     """Past `goalie_box_full_depth` of intrusion, the box penalty
     saturates to 1. We use a deep box and a small full-depth so the
-    saturation zone is reachable without hitting the wall sigmoid."""
+    saturation zone is reachable without hitting the wall sigmoid.
+    Requires `include_goalie_box=True` (the default disables the
+    spatial box source — `GoalieBoxPenalty` handles it instead)."""
     term = StaticFieldPenalty(
         field_x_half=0.5,
         field_y_half=0.3,
@@ -160,6 +162,7 @@ def test_grid_deep_inside_opposing_box_is_one() -> None:
         safe_dist=0.085,
         unavoidable_dist=0.030,
         grid_resolution=0.005,
+        include_goalie_box=True,
     )
     # Box on +x: x in [0.30, 0.50]. Pick x = 0.36: 60mm intrusion ⟹
     # well past the 50mm saturation threshold. Wall distance 140mm ⟹
@@ -180,6 +183,7 @@ def test_box_boundary_alone_has_zero_penalty() -> None:
         safe_dist=0.085,
         unavoidable_dist=0.030,
         grid_resolution=0.005,
+        include_goalie_box=True,
     )
     # Just outside the inner edge of the +x box (x=0.30 is the edge;
     # x=0.295 is 5mm outside). Wall distance >> safe_dist ⟹ wall
@@ -228,7 +232,9 @@ def test_grid_far_from_opposing_box_is_zero_when_far_from_walls() -> None:
 
 
 def test_own_box_penalty_when_enabled() -> None:
-    """penalize_own_box=True ⟹ -x box also penalises intrusion."""
+    """penalize_own_box=True ⟹ -x box also penalises intrusion. Also
+    needs `include_goalie_box=True` to enable the spatial source at
+    all (default off)."""
     term = StaticFieldPenalty(
         field_x_half=0.5,
         field_y_half=0.3,
@@ -239,6 +245,7 @@ def test_own_box_penalty_when_enabled() -> None:
         unavoidable_dist=0.030,
         grid_resolution=0.005,
         penalize_own_box=True,
+        include_goalie_box=True,
     )
     # Mirror of the deep-intrusion test on the -x side.
     assert term.lookup(-0.36, 0.0) == pytest.approx(1.0, abs=1e-6)

@@ -155,6 +155,9 @@ class AtomSoloEnv(gym.Env):
         max_episode_steps: int = 800,  # ≈13.3 s at 60 Hz control
         seed: int | None = None,
         manipulator: str | None = None,
+        goalie_box_depth: float = 0.12,
+        goalie_box_y_half: float = 0.10,
+        goalie_box_terminal_time: float = 0.0,
     ) -> None:
         """
         Parameters
@@ -167,6 +170,20 @@ class AtomSoloEnv(gym.Env):
             as `physics_dt` (no action repeat).
         max_episode_steps
             Truncation limit, in CONTROL steps (i.e. calls to `step()`).
+        goalie_box_depth, goalie_box_y_half
+            Geometry of EACH team's defensive goalie box, relative to its
+            own goal line. Default 0.12 × 0.20 m matches the markings YAML
+            and `StaticFieldPenalty` defaults. The robot's "time-in-box"
+            timer counts time spent in its OPPOSING box (i.e. the box it's
+            attacking through).
+        goalie_box_terminal_time
+            Seconds the robot may be continuously in its opposing box
+            before the episode is `terminated`. **Default 0** ⟹ rule is
+            DISABLED — the timer never advances (always 0 in the obs) and
+            no termination ever fires from this rule. Set to a positive
+            value (e.g. 3.0) to enable the goalie-box budget. The obs
+            encodes `time_in_box` as `min(elapsed / terminal_time, 1.0)`,
+            so 1.0 in the obs is exactly the violation threshold.
         """
         super().__init__()
         if physics_dt <= 0.0:
@@ -184,6 +201,19 @@ class AtomSoloEnv(gym.Env):
         self.control_dt = control_dt
         self.action_repeat = action_repeat
         self.max_episode_steps = max_episode_steps
+        if goalie_box_depth < 0.0 or goalie_box_y_half < 0.0:
+            raise ValueError(
+                f"goalie_box_depth ({goalie_box_depth}) and "
+                f"goalie_box_y_half ({goalie_box_y_half}) must be >= 0"
+            )
+        if goalie_box_terminal_time < 0.0:
+            raise ValueError(
+                f"goalie_box_terminal_time must be >= 0 (0 = rule disabled), "
+                f"got {goalie_box_terminal_time}"
+            )
+        self.goalie_box_depth = float(goalie_box_depth)
+        self.goalie_box_y_half = float(goalie_box_y_half)
+        self.goalie_box_terminal_time = float(goalie_box_terminal_time)
 
         # Reward terms applied each step. Public list — mutate freely
         # (e.g. for curriculum stage changes mid-training); `compute_reward`
@@ -236,6 +266,16 @@ class AtomSoloEnv(gym.Env):
         # Edge-detection latches for goal events.
         self._ball_in_opp_goal_prev: bool = False
         self._ball_in_own_goal_prev: bool = False
+        # Episode-level latch: flips True the first substep ANY robot
+        # touches the ball (only the learner exists in solo). Used by
+        # `GoalScoredReward` to suppress sparse credit for goals scored
+        # from random initial velocity before the ball was influenced.
+        # See `goal_scored.py` docstring.
+        self._ball_touched: bool = False
+        # Per-visit goalie-box timer (seconds). Counts continuous time
+        # spent in the opposing box; resets on box exit. Used by the
+        # GoalieBoxPenalty reward + box-violation termination rule.
+        self._self_time_in_opp_box: float = 0.0
 
         self._rng = np.random.default_rng(seed)
 
@@ -281,6 +321,8 @@ class AtomSoloEnv(gym.Env):
         self._prev_action = None
         self._ball_in_opp_goal_prev = False
         self._ball_in_own_goal_prev = False
+        self._ball_touched = False
+        self._self_time_in_opp_box = 0.0
         return self._build_obs(), {}
 
     def step(
@@ -304,6 +346,8 @@ class AtomSoloEnv(gym.Env):
         accumulated: dict[str, Any] = {
             "scored_for_us": False,
             "scored_against_us": False,
+            "box_violation": False,
+            "box_violation_self": False,
         }
         # Contact accumulators: a flat list of every RobotContactPoint Box2D
         # reported across all substeps in this control step. Reward terms
@@ -342,8 +386,27 @@ class AtomSoloEnv(gym.Env):
                     ))
                     if c.other_category & _OBSTACLE_CATEGORIES:
                         substep_had_obstacle = True
+                    if c.other_category & sim_py.CATEGORY_BALL:
+                        self._ball_touched = True
                 if substep_had_obstacle:
                     obstacle_contact_substeps += 1
+
+            # Update goalie-box timer for the learner. Solo has only one
+            # robot, so only one timer to track. Rule disabled when
+            # `goalie_box_terminal_time == 0`.
+            if self.goalie_box_terminal_time > 0.0:
+                rx = float(self.robot.state[0])
+                ry = float(self.robot.state[1])
+                if self._is_in_opp_goalie_box(rx, ry):
+                    self._self_time_in_opp_box += self.physics_dt
+                else:
+                    self._self_time_in_opp_box = 0.0
+                if self._self_time_in_opp_box >= self.goalie_box_terminal_time:
+                    accumulated["box_violation_self"] = True
+                    accumulated["box_violation"] = True
+                    # Cap at terminal so the obs reads exactly 1.0 even if
+                    # we overshot by a fraction of a substep.
+                    self._self_time_in_opp_box = self.goalie_box_terminal_time
 
             substep_info = self._detect_events()
             terminal_this_substep = False
@@ -351,6 +414,8 @@ class AtomSoloEnv(gym.Env):
                 if substep_info.get(key, False):
                     accumulated[key] = True
                     terminal_this_substep = True
+            if accumulated.get("box_violation", False):
+                terminal_this_substep = True
             if terminal_this_substep:
                 break
 
@@ -364,6 +429,7 @@ class AtomSoloEnv(gym.Env):
         info["obstacle_contact_frac"] = (
             obstacle_contact_substeps / n_substeps_run if n_substeps_run > 0 else 0.0
         )
+        info["ball_touched"] = self._ball_touched
 
         # Reward computed once per control step. ctx.dt = control_dt so
         # reward terms see the time elapsed between observations, not the
@@ -385,11 +451,13 @@ class AtomSoloEnv(gym.Env):
         reward, breakdown = self.compute_reward(ctx)
         info["reward_breakdown"] = breakdown
 
-        # Episode ends as soon as a goal goes in (either side). The env owns
-        # this decision, not the reward — termination is a game rule.
+        # Episode ends as soon as a goal goes in (either side) OR a robot
+        # exhausts its goalie-box budget. The env owns these decisions,
+        # not the reward — they're game rules.
         terminated = bool(
             info.get("scored_for_us", False)
             or info.get("scored_against_us", False)
+            or info.get("box_violation", False)
         )
         truncated = (self._step_count >= self.max_episode_steps) and not terminated
 
@@ -475,6 +543,25 @@ class AtomSoloEnv(gym.Env):
             mirror=False,
             v_max=V_MAX_DEFAULT,
             omega_max=OMEGA_MAX_DEFAULT,
+            self_time_in_box_norm=self._self_time_in_box_norm(),
+        )
+
+    def _self_time_in_box_norm(self) -> float:
+        """Normalised goalie-box timer in [0, 1]. Always 0 when the rule
+        is disabled (`goalie_box_terminal_time == 0`)."""
+        if self.goalie_box_terminal_time <= 0.0:
+            return 0.0
+        return min(self._self_time_in_opp_box / self.goalie_box_terminal_time, 1.0)
+
+    def _is_in_opp_goalie_box(self, x: float, y: float) -> bool:
+        """Test whether a world-frame point falls inside the +x (learner's
+        opposing) goalie box. Box spans x ∈ [field_x_half - depth,
+        field_x_half], y ∈ [-y_half, +y_half]. Inclusive on the field-
+        facing side; the goal-mouth-facing edge is the goal line itself."""
+        return (
+            x >= self.field_x_half - self.goalie_box_depth
+            and x <= self.field_x_half
+            and abs(y) <= self.goalie_box_y_half
         )
 
     @staticmethod

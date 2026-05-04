@@ -67,14 +67,14 @@ def test_team_obs_action_spaces(tmp_path: Path) -> None:
     solo.save(str(solo_path))
     transfer_solo_to_team(solo_path, team_path)
     team = PPO.load(str(team_path), device="cpu")
-    assert team.observation_space.shape == (18,)
+    assert team.observation_space.shape == (20,)
     assert team.action_space.shape == (2,)
 
 
 def test_first_layer_weights_expanded_correctly(tmp_path: Path) -> None:
-    """First-layer weights of policy_net and value_net: solo (128, 11)
-    becomes team (128, 18) with the solo columns in [:, :11] and zero
-    in [:, 11:]."""
+    """First-layer weights of policy_net and value_net: solo (128, 12)
+    becomes team (128, 20) with the solo columns in [:, :12] and zero
+    in [:, 12:]."""
     solo = _build_solo_model()
     solo_path = tmp_path / "solo.zip"
     team_path = tmp_path / "team.zip"
@@ -91,10 +91,10 @@ def test_first_layer_weights_expanded_correctly(tmp_path: Path) -> None:
     ):
         team_w = team_sd[key]
         solo_w = solo_sd[key]
-        assert team_w.shape == (128, 18), f"{key}: {team_w.shape}"
-        assert solo_w.shape == (128, 11), f"{key}: {solo_w.shape}"
-        assert torch.equal(team_w[:, :11], solo_w), f"{key}: solo cols differ"
-        assert torch.equal(team_w[:, 11:], torch.zeros(128, 7)), \
+        assert team_w.shape == (128, 20), f"{key}: {team_w.shape}"
+        assert solo_w.shape == (128, 12), f"{key}: {solo_w.shape}"
+        assert torch.equal(team_w[:, :12], solo_w), f"{key}: solo cols differ"
+        assert torch.equal(team_w[:, 12:], torch.zeros(128, 8)), \
             f"{key}: opp cols not zero-init"
 
 
@@ -141,9 +141,9 @@ def test_team_with_zero_opp_block_matches_solo(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(0)
     for _ in range(10):
-        obs_solo = rng.uniform(-1.0, 1.0, size=11).astype(np.float32)
+        obs_solo = rng.uniform(-1.0, 1.0, size=12).astype(np.float32)
         obs_team = np.concatenate(
-            [obs_solo, np.zeros(7, dtype=np.float32)]
+            [obs_solo, np.zeros(8, dtype=np.float32)]
         ).astype(np.float32)
         a_solo, _ = solo.predict(obs_solo, deterministic=True)
         a_team, _ = team.predict(obs_team, deterministic=True)
@@ -169,12 +169,12 @@ def test_team_with_nonzero_opp_block_can_differ(tmp_path: Path) -> None:
     # Manually mutate the team's first-layer weight so the opp columns
     # are non-zero, mimicking what training would do.
     sd = team.policy.state_dict()
-    sd["mlp_extractor.policy_net.0.weight"][:, 11:] = torch.randn(128, 7) * 0.1
+    sd["mlp_extractor.policy_net.0.weight"][:, 12:] = torch.randn(128, 8) * 0.1
     team.policy.load_state_dict(sd)
 
-    obs_solo = np.zeros(11, dtype=np.float32)
+    obs_solo = np.zeros(12, dtype=np.float32)
     obs_team_with_opp = np.concatenate(
-        [obs_solo, np.ones(7, dtype=np.float32) * 0.5]
+        [obs_solo, np.ones(8, dtype=np.float32) * 0.5]
     ).astype(np.float32)
 
     a_solo, _ = solo.predict(obs_solo, deterministic=True)

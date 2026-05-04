@@ -22,16 +22,28 @@ geometry sometimes forces it (e.g., the robot ends up between ball
 and own goal and must back-push to avoid scoring on itself). Setting
 `back_weight=1.0` recovers the original symmetric behaviour.
 
-Why this term ISN'T active during ball contact
-----------------------------------------------
-Once the ball is touching the robot, controlled steering emerges from
-ball-at-side / ball-at-corner contacts that let the robot curve the
-ball's trajectory by turning. Encouraging "face the ball" during
-contact would suppress that emergent dribbling behaviour. We let
-BallProgressReward (velocity-based) drive behaviour in the contact
-regime, and the alignment reward fades to zero before contact begins
-so there's no perverse "release the ball to grab the alignment bonus"
-attractor at the contact boundary.
+Distance gating (and why the default keeps it active in contact)
+----------------------------------------------------------------
+The annular gate has an `inner_radius` knob, but the default is 0 — the
+term is active everywhere up to `outer_radius`, including in contact.
+
+Earlier we masked contact (`inner_radius=0.044 ≈ chassis_half + ball_radius`)
+on the theory that "face the ball" shaping would suppress the
+emergent ball-at-corner dribbling that comes from contact dynamics.
+Empirically we observed the opposite failure mode: a "tangential lock"
+freeze at 40–60 mm — right at the inner-gate boundary — where the
+robot ends up perpendicular to the ball, stationary, with no rotational
+gradient. Distance is locally flat under perpendicular motion,
+ball-progress is zero with the ball stationary, and alignment was
+silenced by the gate. Three dense terms saying nothing.
+
+With `inner_radius=0` the alignment signal stays alive into contact.
+The "release the ball to chase alignment bonus" attractor we worried
+about doesn't materialise in practice because BallProgressReward (which
+fires on `|v_ball|·cos θ_to_goal`) dominates whenever the robot is
+actively pushing — its peak magnitude is well above this term's at
+typical pushing speeds. The `inner_radius` knob is preserved for
+researchers who want to mask contact for a specific experiment.
 
 Reward shape (annular)
 ----------------------
@@ -47,12 +59,12 @@ and peaking at 1.0 at the band midpoint:
 
     reward    = gate(d) * alignment
 
-So with the default back_weight = 0.3:
-    far from ball                     → 0     (other rewards do the work)
-    in contact                        → 0     (don't disrupt dribble)
-    mid-approach, front toward ball   → ~1.0
-    mid-approach, back toward ball    → ~0.3
-    mid-approach, perpendicular       → 0
+So with the defaults (inner=0, outer=0.18, back_weight=0.3):
+    far from ball (d > 0.18 m)        → 0     (other rewards do the work)
+    in contact, front toward ball     → ~ gate(0.044)·1.0  (gate ≈ 0.79)
+    band midpoint (d = 0.09 m), front → ~1.0
+    band midpoint, back toward ball   → ~0.3
+    band midpoint, perpendicular      → 0     (kink at α=±π/2)
 
 Implementation note: the alignment is computed via dot product, not
 atan2. With robot forward = (cos θ, sin θ) and ball-direction unit
@@ -76,8 +88,8 @@ class BallAlignmentReward(RewardTerm):
     def __init__(
         self,
         weight: float = 1.0,
-        inner_radius: float = 0.044,
-        outer_radius: float = 0.10,
+        inner_radius: float = 0.0,
+        outer_radius: float = 0.18,
         back_weight: float = 0.3,
     ) -> None:
         """
@@ -89,13 +101,15 @@ class BallAlignmentReward(RewardTerm):
             `weight`.
         inner_radius
             Below this ball-to-robot distance (metres), the reward is
-            silent. Default 0.044 ≈ chassis_half (0.030) + ball_radius
-            (0.014) — i.e. just inside the contact range.
+            silent. Default 0 — the term is active in contact (see the
+            "tangential lock" discussion in the module docstring). Set
+            to ~0.044 (chassis_half + ball_radius) to recover the
+            original "mask contact" behaviour.
         outer_radius
-            Above this distance, the reward is silent. Default 0.10 m,
-            roughly 1.5-2 chassis widths from the ball — past this, the
-            existing distance / progress shaping is sufficient on its
-            own.
+            Above this distance, the reward is silent. Default 0.18 m,
+            wide enough to cover the freeze zone we observed at
+            40-60 mm AND give a useful approach gradient up to ~3
+            chassis widths from the ball.
         back_weight
             Multiplier applied when the robot is back-aligned to the
             ball (cos_delta < 0). Default 0.3 ⟹ back-pushing earns 30%

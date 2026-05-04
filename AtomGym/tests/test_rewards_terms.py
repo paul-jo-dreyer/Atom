@@ -235,7 +235,11 @@ def test_goal_scored_positive_on_for_us() -> None:
     ctx = _ctx_from_states(
         ball_state=np.zeros(4, dtype=np.float32),
         self_state_5d=np.zeros(5, dtype=np.float32),
-        info={"scored_for_us": True, "scored_against_us": False},
+        info={
+            "scored_for_us": True,
+            "scored_against_us": False,
+            "ball_touched": True,
+        },
     )
     assert term(ctx) == pytest.approx(1.0)
 
@@ -245,7 +249,11 @@ def test_goal_scored_negative_on_against_us() -> None:
     ctx = _ctx_from_states(
         ball_state=np.zeros(4, dtype=np.float32),
         self_state_5d=np.zeros(5, dtype=np.float32),
-        info={"scored_for_us": False, "scored_against_us": True},
+        info={
+            "scored_for_us": False,
+            "scored_against_us": True,
+            "ball_touched": True,
+        },
     )
     assert term(ctx) == pytest.approx(-1.0)
 
@@ -270,6 +278,45 @@ def test_goal_scored_weight_scaling() -> None:
     ctx = _ctx_from_states(
         ball_state=np.zeros(4, dtype=np.float32),
         self_state_5d=np.zeros(5, dtype=np.float32),
-        info={"scored_for_us": True},
+        info={"scored_for_us": True, "ball_touched": True},
     )
     assert term(ctx) == pytest.approx(1.0)
+
+
+# ---- learner-touched-ball gate ---------------------------------------------
+
+
+def test_goal_scored_suppressed_when_ball_untouched_for_us() -> None:
+    """Spurious +x goal from random initial velocity must NOT credit the
+    policy when the learner never touched the ball this episode."""
+    term = GoalScoredReward()
+    ctx = _ctx_from_states(
+        ball_state=np.zeros(4, dtype=np.float32),
+        self_state_5d=np.zeros(5, dtype=np.float32),
+        info={"scored_for_us": True, "ball_touched": False},
+    )
+    assert term(ctx) == 0.0
+
+
+def test_goal_scored_suppressed_when_ball_untouched_against_us() -> None:
+    """Mirror case: spurious own-goal must not penalise the policy."""
+    term = GoalScoredReward()
+    ctx = _ctx_from_states(
+        ball_state=np.zeros(4, dtype=np.float32),
+        self_state_5d=np.zeros(5, dtype=np.float32),
+        info={"scored_against_us": True, "ball_touched": False},
+    )
+    assert term(ctx) == 0.0
+
+
+def test_goal_scored_default_when_flag_missing_is_suppressed() -> None:
+    """Missing key ⟹ treat as untouched. Conservative default: a forgotten
+    plumbing change should silence the goal signal (loud failure during
+    training) rather than silently allow spurious goals through."""
+    term = GoalScoredReward()
+    ctx = _ctx_from_states(
+        ball_state=np.zeros(4, dtype=np.float32),
+        self_state_5d=np.zeros(5, dtype=np.float32),
+        info={"scored_for_us": True},  # no ball_touched key
+    )
+    assert term(ctx) == 0.0

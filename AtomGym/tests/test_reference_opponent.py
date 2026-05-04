@@ -14,7 +14,7 @@ from AtomGym.training.reference_opponent import ReferenceOpponent
 from AtomGym.training.snapshot_pool import Snapshot
 
 
-_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(18,), dtype=np.float32)
+_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(20,), dtype=np.float32)
 _ACT_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(2,), dtype=np.float32)
 _POLICY_KWARGS: dict[str, Any] = dict(
     net_arch=dict(pi=[128, 128], vf=[128, 128]),
@@ -57,7 +57,7 @@ def test_initial_state_unset() -> None:
 
 def test_predict_returns_zeros_when_unset() -> None:
     ref = ReferenceOpponent(_OBS_SPACE, _ACT_SPACE, _POLICY_KWARGS)
-    obs = np.zeros(18, dtype=np.float32)
+    obs = np.zeros(20, dtype=np.float32)
     action = ref.predict(obs)
     assert action.shape == (2,)
     assert action.dtype == np.float32
@@ -87,7 +87,7 @@ def test_set_snapshot_replaces_previous() -> None:
 def test_predict_after_set_returns_correct_shape() -> None:
     ref = ReferenceOpponent(_OBS_SPACE, _ACT_SPACE, _POLICY_KWARGS)
     ref.set_snapshot(_make_snapshot(iteration=1))
-    obs = np.random.default_rng(0).standard_normal(18).astype(np.float32)
+    obs = np.random.default_rng(0).standard_normal(20).astype(np.float32)
     action = ref.predict(obs)
     assert action.shape == (2,)
     assert action.dtype == np.float32
@@ -105,7 +105,7 @@ def test_predict_is_deterministic() -> None:
     (deterministic mode = action distribution mean, no RNG)."""
     ref = ReferenceOpponent(_OBS_SPACE, _ACT_SPACE, _POLICY_KWARGS)
     ref.set_snapshot(_make_snapshot(iteration=1))
-    obs = np.random.default_rng(0).standard_normal(18).astype(np.float32)
+    obs = np.random.default_rng(0).standard_normal(20).astype(np.float32)
     a1 = ref.predict(obs)
     a2 = ref.predict(obs)
     a3 = ref.predict(obs)
@@ -139,7 +139,7 @@ def test_state_dict_round_trip_matches_learner() -> None:
 
     rng = np.random.default_rng(0)
     for _ in range(5):
-        obs = rng.standard_normal(18).astype(np.float32)
+        obs = rng.standard_normal(20).astype(np.float32)
         learner_action, _ = learner.predict(obs, deterministic=True)
         ref_action = ref.predict(obs)
         np.testing.assert_allclose(ref_action, learner_action, atol=1e-6)

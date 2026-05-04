@@ -1,0 +1,48 @@
+# Solo PPO training config — defaults match the legacy CLI defaults so
+# that `--config default_solo.yaml` is behaviourally identical to a
+# default `python -m AtomGym.training.train` invocation.
+#
+# Schema: see `AtomGym/training/config.py`.
+
+env:
+  max_episode_steps: 400
+  goalie_box_depth: 0.12
+  goalie_box_y_half: 0.10
+  # 0 disables the box-time-violation rule (legacy behaviour preserved).
+  # Set to e.g. 3.0 to enable a 3-second-per-visit budget on the
+  # opposing goalie box, plus an associated `goalie_box` reward below.
+  goalie_box_terminal_time: 0.0
+  manipulator: null
+
+rewards:
+  ball_progress:
+    weight: 1.0
+  distance_to_ball:
+    weight: -0.5
+  goal_scored:
+    weight: 50.0
+  stall_penalty:
+    weight: -0.3
+  obstacle_contact:
+    weight: -0.5
+  ball_alignment:
+    weight: 0.3
+    # inner_radius / outer_radius / back_weight: class defaults
+    # (0.0 / 0.18 / 0.3 — see ball_alignment.py).
+
+  # Disabled by default — uncomment to add anticipatory wall shaping.
+  # static_field:
+  #   weight: -0.5
+  #   include_goalie_box: false  # walls-only; box is handled below
+
+  # Disabled by default — uncomment AND set `env.goalie_box_terminal_time`
+  # to a positive value (matching `terminal_time` here) to enable.
+  # goalie_box:
+  #   weight: -50.0
+  #   trigger_time: 2.0
+  #   terminal_time: 3.0           # MUST equal env.goalie_box_terminal_time
+  #   power: 3.0
+  #   termination_penalty: 1.0     # sparse cost on violation, in `weight` units
+  #   depth_saturation: 0.06
+  #   goalie_box_depth: 0.12       # MUST match env.goalie_box_depth
+  #   goalie_box_y_half: 0.10

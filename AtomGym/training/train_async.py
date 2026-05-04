@@ -1,28 +1,32 @@
-"""Train a PPO policy on the Level-1 SoloEnv (single robot + ball, two goals).
+"""Train a PPO policy on the Level-1 SoloEnv using a SHARED-MEMORY
+vec env (`gymnasium.vector.AsyncVectorEnv` via the `GymAsyncVecEnv`
+adapter), instead of SB3's pickle-over-pipe `SubprocVecEnv`.
+
+This is a parallel script to `train.py`. The training logic (rewards,
+PPO hyperparameters, callbacks, resume, GIF eval) is identical. The
+only differences are:
+  * Vec env construction goes through `_async_vec_env.GymAsyncVecEnv`
+    with `shared_memory=True`. Per-step IPC overhead drops to near zero;
+    workers write obs into pre-allocated shared-memory pages instead of
+    pickling them through pipes. For fast envs (sim_py is C++ Box2D,
+    sub-millisecond per step), this is a meaningful chunk of total step
+    time on `train.py`'s SubprocVecEnv path.
+  * `--use-subproc` is gone. The adapter is always async/multiprocess;
+    if you need single-process behaviour, use `train.py` without
+    `--use-subproc`.
 
 Usage (run from the repo root, with the venv active):
 
-    .venv/bin/python -m AtomGym.training.train --run-name l1_baseline
+    .venv/bin/python -m AtomGym.training.train_async --run-name l1_async
     # or:
-    .venv/bin/python AtomGym/training/train.py --run-name l1_baseline
+    .venv/bin/python AtomGym/training/train_async.py --run-name l1_async
 
-What this script does:
-1. Builds a vector of `AtomSoloEnv`s (DummyVecEnv by default; SubprocVecEnv
-   via `--use-subproc` for genuine parallelism on bigger machines).
-2. Each env is configured with the Level-1 reward composition and the
-   default initial-state DR. Tweak the constants in `make_l1_env` below.
-3. Creates a PPO model with a 2×128 MLP policy head (and matching value
-   head) and SB3's default PPO hyperparameters.
-4. Trains, logging both standard SB3 metrics and per-reward-term means to
-   TensorBoard, and saving periodic checkpoints.
+Outputs land under `training_runs/<run_name>/` (same layout as train.py).
 
-Outputs land under `training_runs/<run_name>/`:
-    tensorboard/        — TensorBoard event files
-    checkpoints/        — periodic .zip checkpoints
-    final.zip           — final policy
-
-Recommended next steps after a run:
-    tensorboard --logdir training_runs/<run_name>/tensorboard
+If this delivers a meaningful FPS gain over `train.py`, the 30-50 line
+adapter is the right starting point for thinking about further upgrades
+(EnvPool, Sample Factory). If it doesn't, IPC wasn't the bottleneck for
+our workload and the bigger upgrades aren't worth the engineering cost.
 """
 
 from __future__ import annotations
@@ -43,24 +47,20 @@ from stable_baselines3.common.callbacks import (  # noqa: E402
     CheckpointCallback,
 )
 from stable_baselines3.common.monitor import Monitor  # noqa: E402
-from stable_baselines3.common.vec_env import (  # noqa: E402
-    DummyVecEnv,
-    SubprocVecEnv,
-    VecEnv,
-)
+from stable_baselines3.common.vec_env import VecEnv  # noqa: E402
 
 from AtomGym.environments import AtomSoloEnv, InitialStateRanges  # noqa: E402
-from AtomGym.rewards import RewardTerm  # noqa: E402
-from AtomGym.training.config import (  # noqa: E402
-    TrainingConfig,
-    load_training_config,
+from AtomGym.training._async_vec_env import GymAsyncVecEnv  # noqa: E402
+from AtomGym.rewards import (  # noqa: E402
+    BallAlignmentReward,
+    BallProgressReward,
+    DistanceToBallReward,
+    GoalScoredReward,
+    ObstacleContactPenalty,
+    StallPenaltyReward,
+    StaticFieldPenalty,
 )
 from AtomGym.training.gif_eval_callback import GifEvalCallback  # noqa: E402
-
-# Default config path — used when `--config` isn't passed. Lives next
-# to AtomGym so users can `--config AtomGym/configs/my_run.yaml` after
-# copying the default.
-_DEFAULT_CONFIG_PATH = _REPO_ROOT / "AtomGym" / "configs" / "default_solo.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -70,82 +70,107 @@ _DEFAULT_CONFIG_PATH = _REPO_ROOT / "AtomGym" / "configs" / "default_solo.yaml"
 
 def make_l1_env(
     seed: int = 0,
-    rewards: list[RewardTerm] | None = None,
-    env_kwargs: dict[str, Any] | None = None,
+    max_episode_steps: int = 400,
+    stall_penalty: float = 0.3,
+    obstacle_contact_penalty: float = 0.5,
+    ball_alignment: float = 0.3,
+    static_field_penalty: float = 0.0,
+    manipulator: str | None = None,
 ) -> AtomSoloEnv:
-    """Construct a Level-1 env. Reward composition + env shaping params
-    come from a `TrainingConfig` (see `config.py`); this factory just
-    merges the per-worker `seed` in.
-
-    `env_kwargs` is the dict from `TrainingConfig.env_kwargs` — a subset
-    of `AtomSoloEnv.__init__` kwargs. Sensible defaults for `physics_dt`
-    (60 Hz) and `control_dt` (30 Hz, action_repeat=2) are filled in if
-    not specified, preserving the legacy CLI-default behaviour.
-
-    `rewards=None` is supported as an empty composite — useful for shape-
-    lookup callers like `transfer_extend_obs` that build an env purely
-    to read its observation_space."""
-    rewards = list(rewards) if rewards is not None else []
-    base_kwargs: dict[str, Any] = {
-        "physics_dt": 1.0 / 60.0,  # sim ticks at 60 Hz
-        "control_dt": 1.0 / 30.0,  # policy emits actions at 30 Hz (action_repeat=2)
-    }
-    if env_kwargs is not None:
-        base_kwargs.update(env_kwargs)
+    """Construct a Level-1 env with the agreed reward composition and a
+    light initial-state DR config. Edit here for first-pass tuning."""
+    rewards: list = [
+        # Dense shaping: reward speed-toward-goal and proximity-to-ball.
+        BallProgressReward(weight=1.0),  # ~ m/s of ball progress toward +x goal
+        DistanceToBallReward(weight=-0.5),  # negative ⟹ closer = better
+        # Sparse terminal: large ± reward on a goal.
+        GoalScoredReward(weight=50.0),
+    ]
+    if stall_penalty > 0.0:
+        # Push back on the "do nothing" attractor that PPO falls into
+        # early in training. Negative weight ⟹ small per-step penalty
+        # whenever the action is near (0, 0).
+        rewards.append(StallPenaltyReward(weight=-stall_penalty))
+    if obstacle_contact_penalty > 0.0:
+        # Counter the failure mode the stall-penalty introduces: a robot
+        # pinned to a wall has zero motion but is "doing something" (full
+        # throttle into the wall), so stall-penalty doesn't punish it.
+        # Penalise time spent in obstacle contact instead.
+        rewards.append(ObstacleContactPenalty(weight=-obstacle_contact_penalty))
+    if ball_alignment > 0.0:
+        # Close the credit-assignment hole in the approach regime —
+        # rotating to point the body axis at the ball gives a small
+        # positive gradient even when the distance is unchanged. Term
+        # is silent during ball contact (preserves dribbling) and
+        # silent far from the ball (other rewards do the work).
+        rewards.append(BallAlignmentReward(weight=ball_alignment))
+    if static_field_penalty > 0.0:
+        # Sigmoid potential field around walls + opposing goalie box.
+        # Anticipatory shaping for collision-free motion: PPO sees the
+        # boundary before contact and learns to slow / steer fluidly.
+        # Goalie-box rule layers on top — penalty starts at 0 on the
+        # box edge and ramps up with intrusion, so corners stay
+        # reachable. Geometry + sigmoid params live in
+        # StaticFieldPenalty's class defaults; edit there to retune.
+        rewards.append(StaticFieldPenalty(weight=-static_field_penalty))
     init_ranges = InitialStateRanges(
         # Default: random pose, zero velocities. Once the policy can score
         # from a stationary ball, broaden the velocity ranges to make the
         # policy robust to a moving ball / off-axis approach.
-        # TODO: lift InitialStateRanges into the YAML once we want to A/B
-        # different DR schedules across runs.
         ball_speed=(0.0, 0.3)
     )
     return AtomSoloEnv(
         rewards=rewards,
         init_state_ranges=init_ranges,
+        physics_dt=1.0 / 60.0,  # sim ticks at 60 Hz
+        control_dt=1.0 / 30.0,  # policy emits actions at 30 Hz (action_repeat=2)
+        max_episode_steps=max_episode_steps,
         seed=seed,
-        **base_kwargs,
+        manipulator=manipulator,
     )
 
 
 def make_vec_env(
     n_envs: int,
     base_seed: int,
-    use_subproc: bool,
-    config: TrainingConfig,
+    use_subproc: bool,  # accepted for CLI parity with train.py; ignored — see docstring
+    max_episode_steps: int,
+    stall_penalty: float,
+    obstacle_contact_penalty: float,
+    ball_alignment: float,
+    static_field_penalty: float,
+    manipulator: str | None,
 ) -> VecEnv:
-    """Wrap N envs (each freshly constructed from `config`) in
-    `Monitor` and stack them into a SB3 vec env. Each worker gets its
-    own freshly-built reward composite — reward terms are stateless
-    per `_base_reward.py`'s contract, but constructing per-worker is
-    safer than sharing instances across processes."""
-    def _factory(i: int):
-        # Re-build the rewards inside the factory so each worker (under
-        # SubprocVecEnv) has its own instances. The list-of-instances
-        # in `config.rewards` is fine for DummyVecEnv but pickling a
-        # closure that references it through SubprocVecEnv would also
-        # work; constructing fresh keeps semantics uniform.
-        rewards = [type(r)(**_term_kwargs(r, config)) for r in config.rewards]
-        return Monitor(
-            make_l1_env(
-                seed=base_seed + i,
-                rewards=rewards,
-                env_kwargs=config.env_kwargs,
+    """Build a shared-memory vec env via `GymAsyncVecEnv`.
+
+    Wraps each env in SB3's `Monitor` so PPO can log rollout episode
+    stats (it reads `info["episode"]` which Monitor populates on
+    episode end). The Monitor hierarchy is preserved through the
+    AsyncVectorEnv layer — attribute lookups still pass through to the
+    underlying `AtomSoloEnv`.
+
+    `use_subproc` is accepted for CLI parity with `train.py` but does
+    nothing here; this script is always shared-memory async/multi-
+    process. If a single-process flow is needed, use `train.py`.
+    """
+    del use_subproc  # quiet linter; arg kept only for parity
+    factories = [
+        (
+            lambda i=i: Monitor(
+                make_l1_env(
+                    seed=base_seed + i,
+                    max_episode_steps=max_episode_steps,
+                    stall_penalty=stall_penalty,
+                    obstacle_contact_penalty=obstacle_contact_penalty,
+                    ball_alignment=ball_alignment,
+                    static_field_penalty=static_field_penalty,
+                    manipulator=manipulator,
+                )
             )
         )
-
-    factories = [(lambda i=i: _factory(i)) for i in range(n_envs)]
-    if use_subproc and n_envs > 1:
-        return SubprocVecEnv(factories)
-    return DummyVecEnv(factories)
-
-
-def _term_kwargs(term: RewardTerm, config: TrainingConfig) -> dict[str, Any]:
-    """Recover the YAML-supplied kwargs for a given constructed term so
-    we can rebuild it inside each worker. Falls back to {weight} when
-    the term came from an unknown source (defensive)."""
-    raw_rewards = config.raw.get("rewards", {})
-    return raw_rewards.get(term.name, {"weight": term.weight})
+        for i in range(n_envs)
+    ]
+    return GymAsyncVecEnv(factories, shared_memory=True)
 
 
 # ---------------------------------------------------------------------------
@@ -250,16 +275,12 @@ def main() -> None:
         "n_steps is divisible by batch_size.",
     )
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=_DEFAULT_CONFIG_PATH,
-        help="Path to a YAML training config (reward weights + env shaping). "
-        f"Default: {_DEFAULT_CONFIG_PATH}. Schema: see "
-        "AtomGym/training/config.py — the TL;DR is `env:` and `rewards:` "
-        "top-level keys, each `rewards` sub-key matches a RewardTerm.name "
-        "and accepts the term's __init__ kwargs. Copy the default file "
-        "into your run directory and edit there for an experiment, then "
-        "diff between runs to see what changed.",
+        "--max-episode-steps",
+        type=int,
+        default=400,
+        help="Episode truncation length, in CONTROL steps. At control_dt=1/30s, "
+        "400 steps ≈ 13.3 s of sim time per episode. Lower = more episode "
+        "boundaries per training step ⟹ faster credit assignment on sparse rewards.",
     )
     parser.add_argument(
         "--ent-coef",
@@ -278,10 +299,65 @@ def main() -> None:
         "⟹ initial std=1.0. Bump to 0.3-0.5 (std ≈ 1.35-1.65) to widen the "
         "starting distribution and increase initial exploration.",
     )
-    # Reward weights, env shaping, and `--manipulator` moved to the YAML
-    # config (see `--config`). To override for a single experiment, copy
-    # the default YAML and edit it; commit the YAML alongside the run so
-    # the diff between experiments is a single readable file.
+    parser.add_argument(
+        "--stall-penalty",
+        type=float,
+        default=0.3,
+        help="Weight (positive magnitude) on the stall-penalty reward term — "
+        "a per-step nudge away from near-zero (V, Ω) actions. The term "
+        "internally uses NEGATIVE this value as its weight. Set to 0 to "
+        "disable. Larger ⟹ stronger push to keep moving; if the policy "
+        "ends up spamming high-magnitude actions even when wrong, dial down.",
+    )
+    parser.add_argument(
+        "--obstacle-contact-penalty",
+        type=float,
+        default=0.5,
+        help="Weight (positive magnitude) on the obstacle-contact reward "
+        "term — penalises fraction of the control step spent touching "
+        "anything that isn't the ball (walls, goal-walls, other robots). "
+        "Counters the wall-pinning failure mode the stall penalty can "
+        "induce. Set to 0 to disable. Larger ⟹ stronger push away from "
+        "walls; signal is bounded in [0, 1] so weight is comparable to "
+        "the stall penalty per second of contact.",
+    )
+    parser.add_argument(
+        "--ball-alignment",
+        type=float,
+        default=0.3,
+        help="Weight (positive magnitude) on the body-axis alignment reward "
+        "— a small per-step bonus for facing the ball (front OR back) "
+        "in a narrow distance band just outside the contact range. "
+        "Closes the credit-assignment hole between the approach and "
+        "contact regimes; silent during contact to preserve dribbling. "
+        "Set to 0 to disable.",
+    )
+    parser.add_argument(
+        "--static-field-penalty",
+        type=float,
+        default=0.0,
+        help="Weight (positive magnitude) on the static-field penalty — a "
+        "sigmoid potential field around the walls and the opposing goalie "
+        "box. Anticipatory shaping: the policy sees the boundary before "
+        "contact and learns collision-free motion via gradient rather than "
+        "via collision events. Per-step value is bounded in [0, 1], so "
+        "weight is comparable to the obstacle-contact penalty per second "
+        "of saturated proximity. Set to 0 to disable. Geometry + sigmoid "
+        "params live in StaticFieldPenalty's class defaults — edit there "
+        "to retune; preview with `python -m AtomGym.tools.render_static_field`.",
+    )
+    parser.add_argument(
+        "--manipulator",
+        type=str,
+        default=None,
+        help="Name of a manipulator (pusher) config to attach to each "
+        "robot, looked up at AtomSim/sim/configs/manipulators/<name>.json. "
+        "Default None ⟹ bare-body geometry (matches existing checkpoints). "
+        "Common values: 'default_pusher', 'sidewall_pusher'. Adding a "
+        "pusher changes the action-consequence dynamics of the chassis, "
+        "so a checkpoint trained without one cannot resume with one "
+        "(and vice versa).",
+    )
     parser.add_argument(
         "--checkpoint-every",
         type=int,
@@ -357,13 +433,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Load + validate the YAML config up-front so any schema errors
-    # surface immediately, before we set up output dirs / spawn workers.
-    config = load_training_config(args.config)
-    print(f"[train] loaded config: {args.config}")
-    print(f"[train] rewards: {[t.name for t in config.rewards]}")
-    print(f"[train] env_kwargs: {config.env_kwargs}")
-
     # Output directories
     output_dir = args.output_root / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -371,18 +440,17 @@ def main() -> None:
     ckpt_dir = output_dir / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
 
-    # Persist a copy of the resolved config inside the run directory so
-    # the experiment's exact reward shape is recoverable from artefacts
-    # alone (no need to remember which version of default_solo.yaml was
-    # used). Plain copy — keeps comments etc.
-    (output_dir / "config.yaml").write_text(args.config.read_text())
-
     # Vec env
     vec_env = make_vec_env(
-        n_envs=args.n_envs,
-        base_seed=args.seed,
-        use_subproc=args.use_subproc,
-        config=config,
+        args.n_envs,
+        args.seed,
+        args.use_subproc,
+        args.max_episode_steps,
+        args.stall_penalty,
+        args.obstacle_contact_penalty,
+        args.ball_alignment,
+        args.static_field_penalty,
+        args.manipulator,
     )
 
     # PPO with 2x128 MLP for both policy and value heads.
@@ -478,8 +546,12 @@ def main() -> None:
             GifEvalCallback(
                 eval_env_factory=lambda: make_l1_env(
                     seed=args.render_eval_seed,
-                    rewards=[type(r)(**_term_kwargs(r, config)) for r in config.rewards],
-                    env_kwargs=config.env_kwargs,
+                    max_episode_steps=args.max_episode_steps,
+                    stall_penalty=args.stall_penalty,
+                    obstacle_contact_penalty=args.obstacle_contact_penalty,
+                    ball_alignment=args.ball_alignment,
+                    static_field_penalty=args.static_field_penalty,
+                    manipulator=args.manipulator,
                 ),
                 render_every=args.render_every,
                 save_dir=gif_dir,
@@ -504,15 +576,25 @@ def main() -> None:
     else:
         print(f"[train] total timesteps: {args.total_timesteps:,}")
     print(
-        f"[train] n_envs        : {args.n_envs} ({'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'})"
+        f"[train] n_envs        : {args.n_envs} (GymAsyncVecEnv shared-memory)"
     )
     print(f"[train] policy net    : 2x128 MLP")
-    print(f"[train] config        : {args.config}")
-    print(f"[train] reward terms  : {[t.name for t in config.rewards]}")
-    print(f"[train] env kwargs    : {config.env_kwargs}")
+    print(f"[train] episode steps : {args.max_episode_steps}")
     print(
         f"[train] exploration   : ent_coef={args.ent_coef}  log_std_init={args.log_std_init}"
     )
+    if args.stall_penalty > 0:
+        print(f"[train] stall penalty : weight=-{args.stall_penalty}")
+    else:
+        print(f"[train] stall penalty : disabled")
+    if args.obstacle_contact_penalty > 0:
+        print(f"[train] obstacle pen. : weight=-{args.obstacle_contact_penalty}")
+    else:
+        print(f"[train] obstacle pen. : disabled")
+    if args.ball_alignment > 0:
+        print(f"[train] ball alignment: weight=+{args.ball_alignment}")
+    else:
+        print(f"[train] ball alignment: disabled")
     print(f"[train] checkpoints   : every {args.checkpoint_every:,} steps → {ckpt_dir}")
     if args.render_every is not None:
         rows, cols = args.render_grid

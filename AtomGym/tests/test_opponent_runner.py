@@ -17,7 +17,7 @@ from AtomGym.training.snapshot_pool import SnapshotPool
 
 
 # Match the team env's spaces (18-dim obs, 2-dim action).
-_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(18,), dtype=np.float32)
+_OBS_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(20,), dtype=np.float32)
 _ACT_SPACE = spaces.Box(low=-1.0, high=+1.0, shape=(2,), dtype=np.float32)
 # Same kwargs as train.py uses for the learner.
 _POLICY_KWARGS: dict[str, Any] = dict(
@@ -87,7 +87,7 @@ def test_shadow_policy_is_in_eval_mode() -> None:
 
 def test_predict_returns_zeros_when_unloaded() -> None:
     r = _make_runner()
-    obs = np.zeros(18, dtype=np.float32)
+    obs = np.zeros(20, dtype=np.float32)
     action = r.predict(obs)
     assert action.shape == (2,)
     assert action.dtype == np.float32
@@ -99,7 +99,7 @@ def test_update_with_empty_pool_keeps_unloaded() -> None:
     r.update_pool(SnapshotPool())
     assert r.loaded_iteration is None
     np.testing.assert_array_equal(
-        r.predict(np.zeros(18, dtype=np.float32)),
+        r.predict(np.zeros(20, dtype=np.float32)),
         np.zeros(2, dtype=np.float32),
     )
 
@@ -135,7 +135,7 @@ def test_predict_after_load_returns_correct_shape_and_dtype() -> None:
     pool = SnapshotPool()
     pool.add(_learner_state_dict_cpu(), iteration=100)
     r.update_pool(pool)
-    obs = np.random.default_rng(0).standard_normal(18).astype(np.float32)
+    obs = np.random.default_rng(0).standard_normal(20).astype(np.float32)
     action = r.predict(obs)
     assert action.shape == (2,)
     assert action.dtype == np.float32
@@ -152,7 +152,7 @@ def test_predict_after_load_is_not_zero() -> None:
     pool = SnapshotPool()
     pool.add(_learner_state_dict_cpu(), iteration=100)
     r.update_pool(pool)
-    obs = np.random.default_rng(0).standard_normal(18).astype(np.float32)
+    obs = np.random.default_rng(0).standard_normal(20).astype(np.float32)
     # Sample a few actions; at least one should be clearly non-zero.
     nonzero_count = 0
     for _ in range(5):
@@ -259,7 +259,7 @@ def test_state_dict_round_trip_deterministic_outputs() -> None:
     # should be elementwise-equal between the learner and the shadow.
     rng = np.random.default_rng(0)
     for _ in range(5):
-        obs = rng.standard_normal(18).astype(np.float32)
+        obs = rng.standard_normal(20).astype(np.float32)
         learner_action, _ = learner.predict(obs, deterministic=True)
         shadow_action, _ = r._shadow_policy.predict(obs, deterministic=True)
         np.testing.assert_allclose(learner_action, shadow_action, atol=1e-6)

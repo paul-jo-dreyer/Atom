@@ -35,18 +35,18 @@ FIELD_Y_HALF = 0.225
 
 
 def test_obs_dim_solo() -> None:
-    # 1 robot total → 4 ball + 7 self = 11
-    assert obs_dim(1) == 11
+    # 1 robot total → 4 ball + 8 self = 12
+    assert obs_dim(1) == 12
 
 
 def test_obs_dim_1v1() -> None:
-    # 2 robots total → 4 + 7 + 7 = 18
-    assert obs_dim(2) == 18
+    # 2 robots total → 4 + 8 + 8 = 20
+    assert obs_dim(2) == 20
 
 
 def test_obs_dim_2v2() -> None:
-    # 4 robots total → 4 + 7·4 = 32
-    assert obs_dim(4) == 32
+    # 4 robots total → 4 + 8·4 = 36
+    assert obs_dim(4) == 36
 
 
 def test_obsview_total_dim_matches_obs_dim() -> None:
@@ -55,11 +55,11 @@ def test_obsview_total_dim_matches_obs_dim() -> None:
 
 def test_obsview_slice_indices() -> None:
     view = ObsView(n_robots=3)  # self + 2 others
-    assert view.total_dim == 4 + 7 * 3
+    assert view.total_dim == 4 + 8 * 3
     assert view.ball_slice == slice(0, 4)
-    assert view.self_slice == slice(4, 11)
-    assert view.other_slice(0) == slice(11, 18)
-    assert view.other_slice(1) == slice(18, 25)
+    assert view.self_slice == slice(4, 12)
+    assert view.other_slice(0) == slice(12, 20)
+    assert view.other_slice(1) == slice(20, 28)
 
 
 def test_obsview_other_slice_out_of_range() -> None:
@@ -95,7 +95,7 @@ def test_build_observation_shape_solo() -> None:
         ball_state=_zero_ball(),
         self_state_5d=_zero_robot(),
     )
-    assert obs.shape == (11,)
+    assert obs.shape == (12,)
     assert obs.dtype == np.float32
 
 
@@ -107,7 +107,7 @@ def test_build_observation_shape_with_others() -> None:
         self_state_5d=_zero_robot(),
         others_states_5d=[_zero_robot(), _zero_robot()],
     )
-    assert obs.shape == (4 + 7 * 3,)
+    assert obs.shape == (4 + 8 * 3,)
 
 
 def test_build_observation_zeros_at_origin() -> None:
@@ -119,7 +119,7 @@ def test_build_observation_zeros_at_origin() -> None:
         self_state_5d=_zero_robot(),
     )
     view = ObsView(n_robots=1)
-    np.testing.assert_allclose(view.self_(obs), [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(view.self_(obs), [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
 
 
 def test_build_observation_position_normalization() -> None:
@@ -464,7 +464,7 @@ def test_theta_helpers_match_obs_encoding() -> None:
 def test_obsview_scalar_read_does_not_alias() -> None:
     """Reading a scalar through `ball_px` returns an immutable Python float;
     rebinding the local can't possibly affect the source array."""
-    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 7, dtype=np.float32)
+    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 8, dtype=np.float32)
     view = ObsView(1)
     val = view.ball_px(obs)
     val = 999.0  # rebind only — Python floats are immutable
@@ -474,7 +474,7 @@ def test_obsview_scalar_read_does_not_alias() -> None:
 def test_obsview_block_read_writes_propagate() -> None:
     """Reading a block returns a numpy view; writes through it MUST mutate
     the source array. (Documented behavior — flagged in the docstring.)"""
-    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 7, dtype=np.float32)
+    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 8, dtype=np.float32)
     view = ObsView(1)
     block = view.ball(obs)
     block[0] = 0.99
@@ -483,7 +483,7 @@ def test_obsview_block_read_writes_propagate() -> None:
 
 def test_obsview_block_copy_isolates() -> None:
     """If the caller wants isolation, .copy() does it."""
-    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 7, dtype=np.float32)
+    obs = np.array([0.1, 0.2, 0.3, 0.4] + [0.0] * 8, dtype=np.float32)
     view = ObsView(1)
     isolated = view.ball(obs).copy()
     isolated[0] = 0.99
@@ -493,6 +493,89 @@ def test_obsview_block_copy_isolates() -> None:
 # ---------------------------------------------------------------------------
 # ActionView
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# time_in_box dim — encoding, accessor, mirror invariance
+# ---------------------------------------------------------------------------
+
+
+def test_time_in_box_default_zero() -> None:
+    """Without an explicit kwarg, time_in_box reads 0 — the rule-disabled
+    semantics that lets old checkpoints with this dim zero-padded behave
+    identically to before."""
+    obs = build_observation(
+        field_x_half=FIELD_X_HALF,
+        field_y_half=FIELD_Y_HALF,
+        ball_state=_zero_ball(),
+        self_state_5d=_zero_robot(),
+    )
+    view = ObsView(1)
+    assert view.self_time_in_box(obs) == pytest.approx(0.0)
+
+
+def test_time_in_box_self_round_trip() -> None:
+    obs = build_observation(
+        field_x_half=FIELD_X_HALF,
+        field_y_half=FIELD_Y_HALF,
+        ball_state=_zero_ball(),
+        self_state_5d=_zero_robot(),
+        self_time_in_box_norm=0.625,
+    )
+    assert ObsView(1).self_time_in_box(obs) == pytest.approx(0.625)
+
+
+def test_time_in_box_clipped_to_unit_interval() -> None:
+    """Inputs outside [0, 1] are clamped — the env should never produce
+    them, but the encoding is the line of defence."""
+    for raw, expected in [(-0.5, 0.0), (1.5, 1.0), (0.3, 0.3)]:
+        obs = build_observation(
+            field_x_half=FIELD_X_HALF,
+            field_y_half=FIELD_Y_HALF,
+            ball_state=_zero_ball(),
+            self_state_5d=_zero_robot(),
+            self_time_in_box_norm=raw,
+        )
+        assert ObsView(1).self_time_in_box(obs) == pytest.approx(expected)
+
+
+def test_time_in_box_other_round_trip() -> None:
+    obs = build_observation(
+        field_x_half=FIELD_X_HALF,
+        field_y_half=FIELD_Y_HALF,
+        ball_state=_zero_ball(),
+        self_state_5d=_zero_robot(),
+        others_states_5d=[_zero_robot(), _zero_robot()],
+        self_time_in_box_norm=0.1,
+        others_time_in_box_norm=[0.4, 0.7],
+    )
+    view = ObsView(3)
+    assert view.self_time_in_box(obs) == pytest.approx(0.1)
+    assert view.other_time_in_box(obs, 0) == pytest.approx(0.4)
+    assert view.other_time_in_box(obs, 1) == pytest.approx(0.7)
+
+
+def test_time_in_box_is_mirror_invariant() -> None:
+    """time_in_box is a scalar count, not a coordinate — same value in
+    direct and mirrored views."""
+    direct = build_observation(
+        field_x_half=FIELD_X_HALF,
+        field_y_half=FIELD_Y_HALF,
+        ball_state=_zero_ball(),
+        self_state_5d=_zero_robot(),
+        self_time_in_box_norm=0.42,
+        mirror=False,
+    )
+    mirrored = build_observation(
+        field_x_half=FIELD_X_HALF,
+        field_y_half=FIELD_Y_HALF,
+        ball_state=_zero_ball(),
+        self_state_5d=_zero_robot(),
+        self_time_in_box_norm=0.42,
+        mirror=True,
+    )
+    view = ObsView(1)
+    assert view.self_time_in_box(direct) == pytest.approx(view.self_time_in_box(mirrored))
 
 
 def test_actionview_total_dim() -> None:

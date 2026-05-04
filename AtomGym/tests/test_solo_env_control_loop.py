@@ -205,3 +205,121 @@ def test_goal_during_substep_terminates_immediately() -> None:
     assert terminated is True
     assert truncated is False
     assert info["scored_for_us"] is True
+
+
+# ---------------------------------------------------------------------------
+# ball_touched flag — credit-hack guard
+# ---------------------------------------------------------------------------
+
+
+def test_ball_touched_starts_false_after_reset() -> None:
+    """A step where the robot is far from the ball must not flip the flag."""
+    env = AtomSoloEnv(seed=0)
+    env.reset(seed=0)
+    # Place robot and ball on opposite sides of the field, no velocity.
+    env.robot.set_state(np.array([-0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([+0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is False
+
+
+def test_ball_touched_flips_true_on_contact() -> None:
+    """Plant the ball and the robot overlapping. The contact list should
+    contain a CATEGORY_BALL entry and the flag should flip True."""
+    env = AtomSoloEnv(seed=0)
+    env.reset(seed=0)
+    # Robot at origin; ball placed inside the chassis half-extent so Box2D
+    # resolves a contact on the next step.
+    env.robot.set_state(np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.02, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is True
+
+
+def test_ball_touched_latches_across_episode() -> None:
+    """Once flipped True the flag stays True for the rest of the episode,
+    even after the robot moves away from the ball."""
+    env = AtomSoloEnv(seed=0)
+    env.reset(seed=0)
+    # First step: contact.
+    env.robot.set_state(np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.02, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.step(np.zeros(2, dtype=np.float32))
+    # Second step: separate them. Flag should still be True.
+    env.robot.set_state(np.array([-0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([+0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is True
+
+
+def test_ball_touched_resets_on_reset() -> None:
+    """A subsequent reset must clear the flag."""
+    env = AtomSoloEnv(seed=0)
+    env.reset(seed=0)
+    env.robot.set_state(np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.02, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is True
+    env.reset(seed=1)
+    # Far apart; flag must be back to False after the reset.
+    env.robot.set_state(np.array([-0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([+0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is False
+
+
+def test_spurious_goal_terminates_but_suppresses_goal_reward() -> None:
+    """End-to-end credit-hack guard: ball flings into +x goal, robot never
+    touched it. Episode must terminate (game rule) but GoalScoredReward
+    must return 0 (no spurious credit)."""
+    from AtomGym.rewards import GoalScoredReward
+    env = AtomSoloEnv(seed=0, rewards=[GoalScoredReward(weight=20.0)])
+    env.reset(seed=0)
+    radius = env.ball_radius
+    # Fling the ball fully past the +x goal line, robot stashed at origin.
+    env.robot.set_state(np.array([-0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    bx = env.field_x_half + radius + 0.005
+    env.ball.set_state(np.array([bx, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, reward, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["scored_for_us"] is True
+    assert info["ball_touched"] is False
+    assert terminated is True
+    assert reward == 0.0  # suppressed: 20.0 × 0
+
+
+def test_spurious_own_goal_terminates_but_suppresses_negative_reward() -> None:
+    """Mirror case: ball flings into -x own goal, robot never touched it.
+    No penalty should be credited."""
+    from AtomGym.rewards import GoalScoredReward
+    env = AtomSoloEnv(seed=0, rewards=[GoalScoredReward(weight=20.0)])
+    env.reset(seed=0)
+    radius = env.ball_radius
+    env.robot.set_state(np.array([+0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    bx = -env.field_x_half - radius - 0.005
+    env.ball.set_state(np.array([bx, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, reward, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["scored_against_us"] is True
+    assert info["ball_touched"] is False
+    assert terminated is True
+    assert reward == 0.0  # suppressed: 20.0 × 0
+
+
+def test_legitimate_goal_after_touch_credits_reward() -> None:
+    """Touch the ball on step 1, fling it into goal on step 2. Goal reward
+    must fire — touch latch persists from step 1."""
+    from AtomGym.rewards import GoalScoredReward
+    env = AtomSoloEnv(seed=0, rewards=[GoalScoredReward(weight=20.0)])
+    env.reset(seed=0)
+    radius = env.ball_radius
+    # Step 1: contact.
+    env.robot.set_state(np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.02, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.step(np.zeros(2, dtype=np.float32))
+    # Step 2: fling ball into +x goal.
+    bx = env.field_x_half + radius + 0.005
+    env.ball.set_state(np.array([bx, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, reward, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["scored_for_us"] is True
+    assert info["ball_touched"] is True
+    assert terminated is True
+    assert reward == pytest.approx(20.0)

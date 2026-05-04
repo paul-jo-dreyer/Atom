@@ -26,11 +26,11 @@ def test_action_space_is_2d() -> None:
     assert env.action_view.total_dim == 2
 
 
-def test_observation_space_is_18d() -> None:
-    """[ball(4) | learner(7) | opp(7)] = 18."""
+def test_observation_space_is_20d() -> None:
+    """[ball(4) | learner(8) | opp(8)] = 20."""
     env = AtomTeamEnv()
-    assert env.observation_space.shape == (18,)
-    assert env.obs_view.total_dim == 18
+    assert env.observation_space.shape == (20,)
+    assert env.obs_view.total_dim == 20
     assert env.obs_view.n_robots == 2
 
 
@@ -61,7 +61,7 @@ def test_reset_places_learner_on_negative_x_half() -> None:
 def test_reset_returns_correct_shape() -> None:
     env = AtomTeamEnv(seed=0)
     obs, info = env.reset(seed=0)
-    assert obs.shape == (18,)
+    assert obs.shape == (20,)
     assert obs.dtype == np.float32
     assert info == {}
 
@@ -84,7 +84,7 @@ def test_step_returns_correct_tuple() -> None:
     env = AtomTeamEnv(seed=0)
     env.reset(seed=0)
     obs, reward, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
-    assert obs.shape == (18,)
+    assert obs.shape == (20,)
     assert isinstance(reward, float)
     assert isinstance(terminated, bool)
     assert isinstance(truncated, bool)
@@ -172,8 +172,8 @@ def test_default_opponent_policy_keeps_opponent_still() -> None:
     assert drift < 0.01, f"opponent drifted {drift} m with zero action"
 
 
-def test_opponent_policy_receives_18d_observation() -> None:
-    """The hook is called with the opponent's perspective obs, shape (18,)."""
+def test_opponent_policy_receives_20d_observation() -> None:
+    """The hook is called with the opponent's perspective obs, shape (20,)."""
     captured = {}
 
     def recording_policy(obs):
@@ -184,7 +184,7 @@ def test_opponent_policy_receives_18d_observation() -> None:
     env.reset(seed=0)
     env.step(np.zeros(2, dtype=np.float32))
     assert "obs" in captured
-    assert captured["obs"].shape == (18,)
+    assert captured["obs"].shape == (20,)
     assert captured["obs"].dtype == np.float32
 
 
@@ -413,6 +413,105 @@ def test_manipulator_kwarg_attaches_pusher_polygon() -> None:
 def test_manipulator_kwarg_unknown_name_raises() -> None:
     with pytest.raises(FileNotFoundError, match="manipulator config not found"):
         AtomTeamEnv(manipulator="this_pusher_does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# ball_touched flag — credit-hack guard (team variant)
+# ---------------------------------------------------------------------------
+
+
+def test_ball_touched_starts_false_in_team_env() -> None:
+    env = AtomTeamEnv(seed=0)
+    env.reset(seed=0)
+    env.robot.set_state(np.array([-0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.opponent.set_state(np.array([+0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.0, 0.10, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is False
+
+
+def test_ball_touched_flips_on_learner_contact_in_team_env() -> None:
+    env = AtomTeamEnv(seed=0)
+    env.reset(seed=0)
+    env.robot.set_state(np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.opponent.set_state(np.array([+0.30, 0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([0.02, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is True
+
+
+def test_ball_touched_flips_on_opponent_contact_in_team_env() -> None:
+    """Opponent influence is part of the environment from the learner's POV.
+    A goal where only the opponent touched the ball is a defensive failure
+    the learner needs to learn from — so the touch flag must flip True even
+    when the learner stays clear."""
+    env = AtomTeamEnv(seed=0)
+    env.reset(seed=0)
+    # Learner stashed far from the ball.
+    env.robot.set_state(np.array([-0.30, 0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    # Opponent overlapping ball at +x side.
+    env.opponent.set_state(np.array([+0.15, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([+0.17, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["ball_touched"] is True
+
+
+def test_team_spurious_goal_suppresses_reward_when_neither_robot_touches() -> None:
+    """Random fling into +x goal with NO contact from either robot must not
+    credit the policy — pure init noise."""
+    from AtomGym.rewards import GoalScoredReward
+    env = AtomTeamEnv(seed=0, rewards=[GoalScoredReward(weight=20.0)])
+    env.reset(seed=0)
+    radius = env.ball_radius
+    env.robot.set_state(np.array([-0.30, 0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.opponent.set_state(np.array([+0.30, -0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    bx = env.field_x_half + radius + 0.005
+    env.ball.set_state(np.array([bx, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, reward, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["scored_for_us"] is True
+    assert info["ball_touched"] is False
+    assert terminated is True
+    assert reward == 0.0
+
+
+def test_team_opponent_scored_against_us_credits_negative_reward() -> None:
+    """Opponent touches the ball, then the ball ends up in the learner's
+    own goal. The learner SHOULD see the negative reward — defending
+    against opponent attacks is a real skill it needs to learn.
+
+    Uses control_dt=1/20 (action_repeat=3) so the ball-velocity-based
+    goal crossing on step 2 has multiple substeps to be detected at —
+    a teleport-into-goal-chamber doesn't work cleanly after Box2D has
+    resolved contact in step 1, and a single-substep velocity flight
+    can be bounced back by goal-chamber walls before the substep ends."""
+    from AtomGym.rewards import GoalScoredReward
+    env = AtomTeamEnv(
+        physics_dt=1.0 / 60.0,
+        control_dt=1.0 / 20.0,  # action_repeat=3
+        seed=0,
+        rewards=[GoalScoredReward(weight=20.0)],
+    )
+    env.reset(seed=0)
+    # Step 1: opponent overlaps ball, learner stays clear. Latches
+    # ball_touched=True.
+    env.robot.set_state(np.array([-0.30, 0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.opponent.set_state(np.array([+0.15, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.ball.set_state(np.array([+0.17, 0.0, 0.0, 0.0], dtype=np.float32))
+    _, _, _, _, info_1 = env.step(np.zeros(2, dtype=np.float32))
+    assert info_1["ball_touched"] is True
+    # Step 2: separate the robots; place ball just inside -x line moving
+    # in -x at 5 m/s. With substep dt=1/60, the ball travels ~0.083 m per
+    # substep — fully crosses the line on substep 1, goal fires.
+    env.robot.set_state(np.array([+0.30, 0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    env.opponent.set_state(np.array([+0.30, -0.20, 0.0, 0.0, 0.0], dtype=np.float32))
+    radius = env.ball_radius
+    bx_start = -env.field_x_half + radius * 0.1
+    env.ball.set_state(np.array([bx_start, 0.0, -5.0, 0.0], dtype=np.float32))
+    _, reward, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["scored_against_us"] is True
+    assert info["ball_touched"] is True
+    assert terminated is True
+    assert reward == pytest.approx(-20.0)
 
 
 def test_opponent_canonical_turn_inverts_in_world() -> None:
