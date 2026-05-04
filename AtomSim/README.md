@@ -151,7 +151,7 @@ Five seconds at 24 fps of random `(forward, turn)` ∈ [-1, 1]² inputs converte
 
 ## Visual style (YAML-driven)
 
-`AtomSim/sim/configs/styles/default.yaml` controls **everything visual**: resolution, the green field, the white wall and marking colours, robot/ball shape modes (`full | square_only | point` / `circle | point`), per-team colour overrides, and the cosmetic interior soccer markings (centre circle, halfway line, goalie boxes). Copy and tweak it for new looks (e.g. `analysis.yaml` for points-on-a-grid).
+`AtomSim/sim/configs/styles/default.yaml` controls **everything visual**: resolution, the green field, the white wall and marking colours, robot/ball shape modes (`full | square_only | point` / `circle | point`), per-team colour overrides, the cosmetic interior soccer markings (centre circle, halfway line, goalie boxes), and the mowed-grass stripe overlay (`field.mowed_stripes_n / _delta / _axis` — set `_n: 0` for a flat turf). Copy and tweak the file for new looks (e.g. `analysis.yaml` for points-on-a-grid).
 
 The interior markings are pure overlay — they're drawn between the green turf and the white wall lines, and the ball passes through them with zero physics interaction. Goal physics (the gap in each side wall + the chamber behind it) is controlled separately by `WorldConfig.goal_y_half` and `goal_extension` on the C++ side, exposed through `sim_py.WorldConfig`.
 

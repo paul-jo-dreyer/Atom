@@ -40,6 +40,11 @@ class FieldStyle:
     field_color: RGB
     walls: RGB
     walls_width_px: int
+    # Mowed-grass overlay: alternating-brightness stripes across the turf.
+    # Set `mowed_stripes_n=0` to disable (single-tone turf).
+    mowed_stripes_n: int = 12
+    mowed_stripes_delta: int = 14  # ±RGB shift between adjacent stripes
+    mowed_stripes_axis: Literal["vertical", "horizontal"] = "vertical"
 
 
 @dataclass(frozen=True)
@@ -134,11 +139,19 @@ def load_style(path: str | Path) -> StyleConfig:
     resolution = Resolution(int(render_w), int(render_h), int(output_w), int(output_h))
 
     f = raw["field"]
+    stripes_axis = f.get("mowed_stripes_axis", "vertical")
+    if stripes_axis not in ("vertical", "horizontal"):
+        raise ValueError(
+            f"mowed_stripes_axis must be 'vertical' or 'horizontal', got {stripes_axis!r}"
+        )
     field_style = FieldStyle(
         background=parse_color(f["background"]),
         field_color=parse_color(f["field_color"]),
         walls=parse_color(f["walls"]),
         walls_width_px=int(f.get("walls_width_px", 3)),
+        mowed_stripes_n=int(f.get("mowed_stripes_n", 12)),
+        mowed_stripes_delta=int(f.get("mowed_stripes_delta", 14)),
+        mowed_stripes_axis=stripes_axis,
     )
 
     r = raw["robot"]

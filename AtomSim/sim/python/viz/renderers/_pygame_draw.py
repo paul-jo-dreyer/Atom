@@ -104,7 +104,12 @@ class PygameSceneDrawer:
 
     def _draw_turf(self, surf: pygame.Surface, scene: SceneSpec) -> None:
         """Filled rectangle of grass colour, slightly larger than the field
-        so the white perimeter walls sit ON the turf rather than at its edge."""
+        so the white perimeter walls sit ON the turf rather than at its edge.
+
+        If `field.mowed_stripes_n > 0`, overlays alternating-brightness bands
+        on top of the base rect for a mowed-grass look. The base fill is
+        still drawn first so any stripe-rounding gap reveals the canonical
+        turf colour rather than the background."""
         xh, yh = scene.field.x_half, scene.field.y_half
         buffer_x = 0.08
         buffer_y = 0.04
@@ -116,6 +121,44 @@ class PygameSceneDrawer:
             rect=(x0, y0, xf - x0, yf - y0),
             width=0,
         )
+
+        n = self.style.field.mowed_stripes_n
+        if n <= 0:
+            return
+        delta = self.style.field.mowed_stripes_delta
+        base = self.style.field.field_color
+
+        def _shift(c: int, d: int) -> int:
+            return max(0, min(255, c + d))
+
+        # Two tones flanking the base by ±delta/2 so the visual mean
+        # equals the configured turf colour.
+        half = delta // 2
+        light = (_shift(base[0], +half), _shift(base[1], +half), _shift(base[2], +half))
+        dark = (_shift(base[0], -half), _shift(base[1], -half), _shift(base[2], -half))
+
+        if self.style.field.mowed_stripes_axis == "vertical":
+            total = xf - x0
+            for i in range(n):
+                a = int(round(x0 + i * total / n))
+                b = int(round(x0 + (i + 1) * total / n))
+                pygame.draw.rect(
+                    surf,
+                    color=light if i % 2 == 0 else dark,
+                    rect=(a, y0, b - a, yf - y0),
+                    width=0,
+                )
+        else:  # horizontal
+            total = yf - y0
+            for i in range(n):
+                a = int(round(y0 + i * total / n))
+                b = int(round(y0 + (i + 1) * total / n))
+                pygame.draw.rect(
+                    surf,
+                    color=light if i % 2 == 0 else dark,
+                    rect=(x0, a, xf - x0, b - a),
+                    width=0,
+                )
 
     def _draw_walls(self, surf: pygame.Surface, scene: SceneSpec) -> None:
         """White perimeter + goal-chamber outlines. Drawn AFTER markings so

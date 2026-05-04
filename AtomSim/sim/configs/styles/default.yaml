@@ -12,11 +12,16 @@ resolution:
   # Note: keep both width and height divisible by 16 for clean H.264 mp4 encoding.
 
 field:
-  background: "#FFFFFF"    
+  background: "#FFFFFF"
   field_color: "#2E7D32" # turf green; extends past the field bounds into the walls and goal chambers
                            # render surface (beyond the white border lines)
   walls: "#FFFFFF"         # white field-perimeter + goal-chamber lines
   walls_width_px: 3
+  # Mowed-grass overlay: alternating-brightness bands on top of the base
+  # turf. Set `mowed_stripes_n: 0` to disable for a flat turf.
+  mowed_stripes_n: 12          # number of stripes across the turf
+  mowed_stripes_delta: 14      # ±RGB shift between adjacent stripes
+  mowed_stripes_axis: vertical # vertical | horizontal
 
 # Cosmetic interior field markings — center circle, halfway line, and goalie
 # (penalty) boxes. Drawn purely on the visual layer, no physics interaction.
