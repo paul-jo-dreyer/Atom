@@ -1,4 +1,4 @@
-27289097742219969
+27393662778331450
 ATTINY
 ATTINY_416_MNR
 
@@ -13,6 +13,13 @@ Untitled
 0
 0
 0
+ATTINY
+VQFN-20-1EP_3x3mm_P0.4mm_EP1.7x1.7mm_custom_expansion
+VQFN, 20 Pin (http://ww1.microchip.com/downloads/en/DeviceDoc/20%20Lead%20VQFN%203x3x0_9mm_1_7EP%20U2B%20C04-21496a.pdf), generated with kicad-footprint-generator ipc_noLead_generator.py
+VQFN NoLead
+0
+25
+21
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -2848,6 +2855,13 @@ speaker CUI
 0
 2
 2
+CP2102N-A02-GQFN20R
+SILABS_CP2102N-A02-GQFN20R
+
+
+0
+21
+21
 Calibration_Scale
 Gauge_10mm_Type1_CopperTop
 Gauge, Massstab, 10mm, CopperTop, Type 1,
@@ -71881,7 +71895,7 @@ CONV_MPM3620AGQV-P
 
 0
 20
-20
+18
 Module
 A20_OLINUXINO_LIME2
 A20 Olinuxino LIME2, 1.2GHz, 512-1024MB RAM, Micro-SD, NAND or eMMC, 1000Mbit Ethernet
