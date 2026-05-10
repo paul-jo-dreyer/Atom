@@ -1,14 +1,15 @@
 package com.atomtag.network
 
-import com.atomtag.model.PoseVector
 import com.atomtag.model.TagConfig
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.MulticastSocket
 
 /**
- * Broadcasts the pose vector to all devices via UDP multicast.
- * All listeners join the multicast group to receive updates — no per-device connections needed.
+ * Broadcasts a pre-serialized packet to all listeners via UDP multicast.
+ * All listeners join the multicast group to receive updates — no per-device
+ * connections needed. The packet format is the caller's responsibility
+ * (see [BroadcastPacket]).
  */
 class UdpBroadcaster {
 
@@ -23,13 +24,9 @@ class UdpBroadcaster {
         group = InetAddress.getByName(TagConfig.MULTICAST_GROUP)
     }
 
-    /**
-     * Send the current pose vector as a single UDP multicast packet.
-     * Call this from a background thread.
-     */
-    fun broadcast(poseVector: PoseVector) {
+    /** Send the supplied bytes as a single UDP multicast packet. */
+    fun broadcast(data: ByteArray) {
         if (!running) return
-        val data = poseVector.toBytes()
         val packet = DatagramPacket(data, data.size, group, TagConfig.MULTICAST_PORT)
         socket?.send(packet)
     }

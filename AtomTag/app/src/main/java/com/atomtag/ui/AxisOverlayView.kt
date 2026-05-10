@@ -23,8 +23,19 @@ class AxisOverlayView @JvmOverloads constructor(
         val bottomCenter: FloatArray?
     )
 
+    /** Hollow-circle marker for a green-ball candidate in unrotated image space. */
+    data class BallOverlayData(
+        val pixelU: Float,
+        val pixelV: Float,
+        val pixelRadius: Float,
+        val passedGate: Boolean,
+    )
+
     private var tagData: List<TagOverlayData> = emptyList()
     private var fieldFrameAxes: Array<FloatArray>? = null
+    private var ballData: List<BallOverlayData> = emptyList()
+    private var fieldLineSegments: List<Array<FloatArray>>? = null
+    private var goalieBoxSegments: List<Array<FloatArray>>? = null
     private var imageWidth = 1
     private var imageHeight = 1
     private var rotationDegrees = 0
@@ -47,6 +58,19 @@ class AxisOverlayView @JvmOverloads constructor(
     private val labelBgPaint = Paint().apply {
         color = Color.argb(160, 0, 0, 0); style = Paint.Style.FILL; isAntiAlias = true
     }
+    private val ballPaintPassed = Paint().apply {
+        color = Color.GREEN; strokeWidth = 4f; style = Paint.Style.STROKE; isAntiAlias = true
+    }
+    private val ballPaintRejected = Paint().apply {
+        color = Color.argb(140, 0, 200, 0); strokeWidth = 2f; style = Paint.Style.STROKE; isAntiAlias = true
+    }
+    private val fieldLinePaint = Paint().apply {
+        color = Color.argb(200, 255, 255, 255)
+        strokeWidth = 5f
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
 
     fun update(
         data: List<TagOverlayData>,
@@ -54,9 +78,15 @@ class AxisOverlayView @JvmOverloads constructor(
         imgHeight: Int,
         rotation: Int,
         fieldAxes: Array<FloatArray>? = null,
+        balls: List<BallOverlayData> = emptyList(),
+        fieldLines: List<Array<FloatArray>>? = null,
+        goalieBoxOutline: List<Array<FloatArray>>? = null,
     ) {
         tagData = data
         fieldFrameAxes = fieldAxes
+        ballData = balls
+        fieldLineSegments = fieldLines
+        goalieBoxSegments = goalieBoxOutline
         imageWidth = imgWidth
         imageHeight = imgHeight
         rotationDegrees = rotation
@@ -66,11 +96,26 @@ class AxisOverlayView @JvmOverloads constructor(
     fun clear() {
         tagData = emptyList()
         fieldFrameAxes = null
+        ballData = emptyList()
+        fieldLineSegments = null
+        goalieBoxSegments = null
         postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+
+        // Field markings (drawn first so tags / ball / axes sit on top).
+        fieldLineSegments?.forEach { line ->
+            val a = mapPoint(line[0])
+            val b = mapPoint(line[1])
+            canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
+        }
+        goalieBoxSegments?.forEach { segment ->
+            val a = mapPoint(segment[0])
+            val b = mapPoint(segment[1])
+            canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
+        }
 
         fieldFrameAxes?.let { axes ->
             val origin = mapPoint(axes[0])
@@ -96,6 +141,16 @@ class AxisOverlayView @JvmOverloads constructor(
             )
             labelPaint.color = Color.WHITE
             canvas.drawText(fieldLabel, lx, ly, labelPaint)
+        }
+
+        if (ballData.isNotEmpty()) {
+            val s = viewScale()
+            for (ball in ballData) {
+                val center = mapPoint(floatArrayOf(ball.pixelU, ball.pixelV))
+                val r = ball.pixelRadius * s
+                val paint = if (ball.passedGate) ballPaintPassed else ballPaintRejected
+                canvas.drawCircle(center[0], center[1], r, paint)
+            }
         }
 
         if (tagData.isEmpty()) return
@@ -195,6 +250,17 @@ class AxisOverlayView @JvmOverloads constructor(
         val vy = rotatedY * scale + offsetY
 
         return floatArrayOf(vx, vy)
+    }
+
+    /** Same scale factor mapPoint uses, exposed so radii in image pixels can be scaled to view pixels. */
+    private fun viewScale(): Float {
+        val rotatedW: Int
+        val rotatedH: Int
+        when (rotationDegrees) {
+            90, 270 -> { rotatedW = imageHeight; rotatedH = imageWidth }
+            else    -> { rotatedW = imageWidth;  rotatedH = imageHeight }
+        }
+        return maxOf(width.toFloat() / rotatedW, height.toFloat() / rotatedH)
     }
 
     companion object {

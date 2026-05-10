@@ -1,0 +1,41 @@
+# Field-layout config. All distances are millimeters; the loader converts to meters.
+# Coordinate notes:
+#   - "tag-local" is the origin tag's frame (X right, Y up, Z out of the tag face).
+#   - "field" is tag-local translated by transforms_mm.tag0_to_field. Z=0 = floor.
+#   - Lines are expressed in field-frame coords; the renderer adds the offset.
+
+# Overall playing surface dimensions, used by future field renderings (sidelines, etc.).
+size_mm:
+  x: 750
+  y: 450
+
+# Pure-translation rigid transforms from the origin tag (id 0) to other reference points.
+# tag0_to_field places the field origin somewhere away from the tag (typically center-field);
+# tag0_to_goalie_box places the goalie-box center wherever the goalie's painted box sits.
+transforms_mm:
+  tag0_to_field:
+    x: 451.872
+    y: -118.1
+    z: -29.7    # tag is 29.7mm above the floor; field z=0 ends up at floor level.
+  tag0_to_goalie_box:
+    x: 120
+    y: -118.1
+    z: -29.7
+
+# Goalie box footprint: a rounded rectangle on the floor, centered at tag0_to_goalie_box.
+goalie_box:
+  width_mm: 130         # extent along the field X axis
+  height_mm: 200        # extent along the field Y axis
+  corner_radius_mm: 20  # corner fillet
+
+# Physical ball geometry. Used by the ball detector's geometric size gate.
+ball:
+  radius_mm: 28
+
+# Field-line markings. Each entry is a straight segment expressed in FIELD-frame coords.
+# Add more as needed (sidelines, halfway line, etc.). Curves / arcs would need a schema
+# extension (e.g. a 'type: arc' variant) — kept flat for now.
+lines:
+  - name: goal_line
+    from_mm: [-374, -60, 0]
+    to_mm:   [-374,  60, 0]

@@ -3,11 +3,6 @@
   "multicast_group": "239.1.1.1",
   "multicast_port": 5000,
   "broadcast_interval_ms": 50,
-  "field_frame": {
-    "x_mm": 451.872,
-    "y_mm": -118.1,
-    "z_mm": -29.7
-  },
   "tags": [
     {
       "id": 0,

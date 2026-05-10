@@ -21,14 +21,6 @@ object TagConfig {
     var BROADCAST_INTERVAL_MS = 50L
         private set
 
-    /** Field-frame offset from the origin tag, in meters. */
-    var FIELD_FRAME_X_M = 0f
-        private set
-    var FIELD_FRAME_Y_M = 0f
-        private set
-    var FIELD_FRAME_Z_M = 0f
-        private set
-
     /** Per-tag configuration: id -> TagInfo */
     private val tags = mutableMapOf<Int, TagInfo>()
 
@@ -48,11 +40,6 @@ object TagConfig {
         MULTICAST_GROUP = root.optString("multicast_group", "239.1.1.1")
         MULTICAST_PORT = root.optInt("multicast_port", 5000)
         BROADCAST_INTERVAL_MS = root.optLong("broadcast_interval_ms", 50L)
-
-        val ff = root.optJSONObject("field_frame")
-        FIELD_FRAME_X_M = ((ff?.optDouble("x_mm", 0.0) ?: 0.0) / 1000.0).toFloat()
-        FIELD_FRAME_Y_M = ((ff?.optDouble("y_mm", 0.0) ?: 0.0) / 1000.0).toFloat()
-        FIELD_FRAME_Z_M = ((ff?.optDouble("z_mm", 0.0) ?: 0.0) / 1000.0).toFloat()
 
         tags.clear()
         val tagsArray = root.getJSONArray("tags")

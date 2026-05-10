@@ -19,6 +19,19 @@ data class DetectionResult(
     /** Projected 2D points for the field-frame axes [origin, x-tip, y-tip, z-tip].
      *  Only populated on the origin tag's detection result. */
     val fieldFrameAxes: Array<FloatArray>? = null,
+    /** Projected 2D endpoints for each field-line marking from FieldConfig.LINES,
+     *  in load order. Each entry is `[start, end]`. Only populated on the origin
+     *  tag's detection result, and only when the field overlay flag is on.
+     *  Renderer draws these behind tags / ball / axes. */
+    val fieldLines: List<Array<FloatArray>>? = null,
+    /** Projected 2D segments for the visible portion of the goalie-box footprint.
+     *  Each entry is `[start, end]`. Segments are emitted after parametric
+     *  clipping against the field-boundary half-planes (built from
+     *  FieldConfig.LINES), so the part of the box outside the field — and any
+     *  edge that lies on a field-boundary line — is not in the output. Only
+     *  populated on the origin tag's detection result, and only when the field
+     *  overlay flag is on. */
+    val goalieBoxOutline: List<Array<FloatArray>>? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

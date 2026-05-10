@@ -92,8 +92,14 @@ AtomTag/
 │   ├── build.gradle.kts                  ← deps, build variants, Compose options
 │   └── src/main/
 │       ├── AndroidManifest.xml           ← permissions, service decl, theme
-│       ├── assets/tag_config.json        ← origin tag, multicast cfg, field
-│       │                                    frame offset, per-tag size+label
+│       ├── assets/
+│       │   ├── tag_config.json           ← origin tag id, multicast cfg,
+│       │   │                                broadcast interval, per-tag
+│       │   │                                size + label (AprilTag identity)
+│       │   └── field_config.yaml         ← field size, tag0→field /
+│       │                                    tag0→goalie-box transforms,
+│       │                                    goalie box, ball radius, line
+│       │                                    markings (playing surface)
 │       ├── res/
 │       │   ├── drawable/                 ← notification icon (vector)
 │       │   ├── mipmap-*/                 ← launcher icons (adaptive)
@@ -110,17 +116,22 @@ AtomTag/
 │           │   └── UserPreferences.kt    ← persistent name/color/team
 │           ├── detection/
 │           │   ├── AprilTagDetector.kt   ← ArUco detection, ROI re-detect,
-│           │   │                            origin-pose EMA filter, 3D→2D
-│           │   │                            axis projection (incl. field axes)
-│           │   └── PoseTransformer.kt    ← cam→origin frame, origin→field
+│           │   │                            IPPE_SQUARE for origin tag with
+│           │   │                            bot-Z disambiguation, EMA filter,
+│           │   │                            3D→2D axis projection
+│           │   ├── BallDetector.kt       ← HSV+contour green-ball detection,
+│           │   │                            ground-plane unproject + radius gate
+│           │   ├── PoseTransformer.kt    ← cam→origin→field frame, yaw helper
+│           │   └── StateTracker.kt       ← per-tag previous pose + EMA-smoothed
+│           │                                velocity (also for ball)
 │           ├── model/
 │           │   ├── DetectionResult.kt    ← per-tag detector output
-│           │   ├── PoseVector.kt         ← thread-safe array-of-poses,
-│           │   │                            UDP serialization
-│           │   ├── TagConfig.kt          ← global config singleton
+│           │   ├── FieldConfig.kt        ← field-layout singleton (YAML)
+│           │   ├── TagConfig.kt          ← AprilTag identity singleton (JSON)
 │           │   └── TagPose.kt            ← (tagId, 4×4 transform, ts)
 │           ├── network/
-│           │   └── UdpBroadcaster.kt     ← MulticastSocket sender
+│           │   ├── BroadcastPacket.kt    ← wire-format serializer
+│           │   └── UdpBroadcaster.kt     ← MulticastSocket sender (bytes)
 │           ├── service/
 │           │   └── DetectionService.kt   ← see arch diagram above
 │           └── ui/
@@ -164,9 +175,10 @@ There are **three** coordinate frames the code cares about:
 
 3. **Field Frame** — the production frame everything else is reported in.
    Defined as a pure translation from the Zero Tag Frame by
-   `(FIELD_FRAME_X_M, Y_M, Z_M)` (loaded from `tag_config.json` →
-   `field_frame.{x_mm,y_mm,z_mm}`). For the soccer use case, this puts the
-   origin in the middle of the field rather than at the goal-mounted Net tag.
+   `(FieldConfig.FIELD_FRAME_X_M, Y_M, Z_M)` (loaded from
+   `field_config.yaml` → `transforms_mm.tag0_to_field`). For the soccer
+   use case, this puts the origin in the middle of the field rather than
+   at the goal-mounted Net tag.
 
    `PoseTransformer.transformToFieldFrame(detections)`:
    1. First runs `transformToOriginFrame`.
@@ -350,13 +362,15 @@ action bar; Compose handles all chrome).
 
 ### `TagConfig` (singleton, loaded from `assets/tag_config.json`)
 
+Owns AprilTag identity + multicast plumbing. Field-layout config moved out;
+see `FieldConfig` below.
+
 ```json
 {
   "origin_tag_id": 0,
   "multicast_group": "239.1.1.1",
   "multicast_port": 5000,
   "broadcast_interval_ms": 50,
-  "field_frame": {"x_mm": 451.872, "y_mm": -118.1, "z_mm": -29.7},
   "tags": [
     {"id": 0, "size_meters": 0.08, "label": "Net"},
     {"id": 1, "size_meters": 0.05, "label": "Atom_1"},
@@ -368,12 +382,48 @@ action bar; Compose handles all chrome).
 - `MULTICAST_GROUP`, `MULTICAST_PORT`, `BROADCAST_INTERVAL_MS`
   control UDP output.
 - `ORIGIN_TAG_ID` defines the Zero Tag.
-- `FIELD_FRAME_X_M / Y_M / Z_M` is the offset from origin tag to field
-  origin (loaded from mm and converted).
 - Per-tag `size_meters` is the AprilTag side length in meters; required
   by `solvePnP`.
 - Per-tag `label` appears in the UI (overridable per-device via
   `UserPreferences`).
+
+### `FieldConfig` (singleton, loaded from `assets/field_config.yaml`)
+
+Owns everything about the playing surface — overall dimensions, the
+tag0→field-frame and tag0→goalie-box rigid translations, goalie box
+geometry, ball radius, and the list of line markings to render. YAML
+(parsed via SnakeYAML) instead of JSON so the file can carry comments.
+Loaded once in `MainActivity.onCreate` after `TagConfig.load`.
+
+```yaml
+size_mm:
+  x: 1000
+  y: 600
+transforms_mm:
+  tag0_to_field:      { x: 451.872, y: -118.1, z: -29.7 }
+  tag0_to_goalie_box: { x: 0, y: 0, z: 0 }
+goalie_box:
+  width_mm: 100         # along field X
+  height_mm: 200        # along field Y
+  corner_radius_mm: 20
+ball:
+  radius_mm: 28
+lines:
+  - name: goal_line
+    from_mm: [-374, -60, 0]
+    to_mm:   [-374,  60, 0]
+```
+
+Public Kotlin fields are in **meters** (loader converts from mm). All
+position fields (`size`, `transforms`, `goalie_box`, line endpoints) are
+**translations only** — orientation is implicit / always axis-aligned with
+the field frame today. Line endpoints are expressed in **field-frame**
+coordinates; the renderer adds `tag0_to_field` to project them via the
+origin tag's pose. To add a new field marking, append a `lines:` entry
+and the renderer picks it up — no code change needed.
+
+A future curve schema (e.g. center circle) would add a `type: arc` variant
+to `lines`. Not designed in yet.
 
 ### `UserPreferences` (singleton, JSON file)
 
@@ -435,23 +485,118 @@ When a real implementation arrives, swap in via the (currently default)
 
 ## Network (UDP)
 
-`UdpBroadcaster`:
-- `start()` opens a `MulticastSocket`.
-- `broadcast(poseVector)` sends `poseVector.toBytes()` to
-  `MULTICAST_GROUP:MULTICAST_PORT`.
-- `stop()` closes.
+`UdpBroadcaster` is format-agnostic: `start()` opens the multicast socket,
+`broadcast(bytes: ByteArray)` sends one datagram to
+`MULTICAST_GROUP:MULTICAST_PORT`, `stop()` closes. It has no knowledge of
+the packet layout. All listeners join the multicast group; there are no
+per-device connections.
 
-`PoseVector.toBytes()` packet format (little-endian):
+The "broadcast Hz" stat in the camera modal is the actual outgoing packet
+rate over a rolling 1-second window — not a simulated number.
+
+### State tracker
+
+`StateTracker` (in `detection/`) is what the service feeds the broadcast
+serializer. Per-tag and ball state are tracked across frames so the packet
+can carry velocities in addition to positions:
+
+- `updateRobot(tagId, x, y, theta, timestampMs)` returns a `RobotState`
+  with smoothed `dx, dy, dtheta`. Velocity is computed from the position
+  delta divided by `dt` and EMA-smoothed against the previous estimate
+  (`alpha = 0.4` ≈ 3-frame TC). Theta velocity uses a shortest-angle
+  delta so the ±π wrap doesn't fake a giant spike.
+- `robotNotDetected()` returns a zeroed state with `present = false`. The
+  caller decides which robots are missing; the tracker doesn't auto-time-out.
+- `updateBall(x, y, timestampMs)` / `ballNotDetected()` for the ball — same
+  shape minus rotation.
+
+`DetectionService.analyzeFrame` only feeds `updateRobot` when the origin
+tag was visible — otherwise the transformed poses fall back to camera
+frame, which would corrupt the tracker. Same for the ball: only updated
+when there's a gated candidate with a non-null `fieldXYZ`.
+
+### Wire format (`BroadcastPacket`)
+
+All multi-byte fields are **little-endian**. Packet size for N robot slots
+is `16 + 20 + 28 × N` bytes. With 6 bots that's 204 bytes — comfortably
+under any UDP MTU.
 
 ```
-[numTags: int32][present:byte tagId:int32 transform: 16×float32] × numTags
+Header (16 bytes):
+  uint32  magic         = 'ATOM' (0x4D4F5441 read LE)
+  uint8   version       = 1
+  uint8   mode          // AppMode ordinal: 0=Sandbox, 1=Teleop,
+                        // 2=SoloSoccer, 3=TeamSoccer
+  uint16  flags         // bit 0: ball_present
+                        // bit 1: origin_visible
+                        // bits 2-15: reserved
+  uint64  timestamp_us  // sender wall-clock (System.currentTimeMillis()*1000)
+
+Ball (20 bytes):
+  uint8   present       // 1 if ball detected and gated this frame
+  uint8   reserved[3]   // alignment padding
+  float32 bx, by        // m, field frame (zeroed if !present)
+  float32 dbx, dby      // m/s, EMA-smoothed
+
+Robots (28 bytes × N, slots ordered by tag_id ascending — slot 0 is
+                     lowest non-origin tag id, etc.):
+  uint8   tag_id        // sanity check; matches expected slot order
+  uint8   present       // 1 if detected this frame
+  uint8   command_bits  // see Command bits below
+  uint8   reserved
+  float32 rx, ry        // m, field frame
+  float32 rtheta        // rad — yaw of tag's local +X in field frame XY,
+                        //       computed as atan2(transform[4], transform[0])
+  float32 drx, dry      // m/s
+  float32 dtheta        // rad/s
 ```
 
-`numTags` is fixed at `TagConfig.NUM_TAGS`. Slots without a current
-detection have `present = 0` and the transform is zeroed.
+Slots for non-detected robots are present in the packet (fixed layout) but
+have `present = 0` and zeroed values — receivers branch on `present`.
 
-The "broadcast Hz" stat in the camera modal is the actual outgoing
-packet rate over a rolling 1-second window — not a simulated number.
+**Command bits** (per-robot, set by the controller):
+
+| Bit | Name        | Meaning                                  |
+|-----|-------------|------------------------------------------|
+| 0   | `RESET`     | Robot should reset its local state.      |
+| 1   | `ZERO_THETA`| Robot should zero its heading reference. |
+| 2-7 | reserved    |                                          |
+
+Commands are addressed by slot (= robot tag id). The controller is
+responsible for clearing the bits once acknowledged; there is currently no
+ack channel in the broadcast direction (commands are one-shot per send).
+
+### Per-mode breakdown
+
+The packet structure is the same in every mode — what *changes* is which
+fields the controller populates and how the robots are expected to
+interpret them. The `mode` byte in the header tells the robot which
+interpretation is in effect.
+
+| Mode        | Robot state | Ball | Per-robot commands | Robot side semantics |
+|-------------|-------------|------|--------------------|----------------------|
+| Sandbox     | populated   | populated | (none)        | Robots receive world telemetry but should be idle / accept manual input. Useful for free-roam testing without the soccer brain engaged. |
+| Teleop      | populated   | populated | populated **(future)** | Controller pushes per-robot teleop intent. The packet currently has no field for an analog-stick vector; first iteration will probably use unused command bits for boolean directions, and a follow-up will likely extend the per-robot block with `cmd_vx, cmd_vy` (breaks v1 wire format → bump `version`). |
+| SoloSoccer  | populated   | populated | (none)        | Robots run their own ball-pursuit policy. The packet is read-only world state from the robot's perspective — controller sends, robots act. |
+| TeamSoccer  | populated   | populated | (none)        | Same as SoloSoccer plus team assignment. **Team is currently per-device state in `UserPreferences` / `DeviceState` but is NOT in the packet yet.** First iteration will likely add a `team_id` byte per robot slot — reuses one of the four reserved bytes in the existing slot layout, no version bump needed. |
+
+In all four modes, `flags.ball_present` and `flags.origin_visible` and the
+per-slot `present` byte are authoritative. A robot that doesn't see itself
+in the packet (its slot has `present == 0`) should assume the controller
+has lost tracking and fall back to its safe behavior for the current mode.
+
+### Versioning
+
+`magic` and `version` together let receivers reject packets that don't
+match the agreed format. The current contract:
+
+- `magic != 'ATOM'` → discard, treat as noise.
+- `magic == 'ATOM'` && `version != 1` → discard with a warning; the format
+  has changed.
+
+Wire-compatible additions (zeroing reserved bytes / adding new flag bits /
+adding a `team_id` byte that was previously reserved) keep `version = 1`.
+Layout-changing additions (new fields, resized slots) increment `version`.
 
 ---
 
@@ -565,10 +710,22 @@ in place. Don't shrink this.
 - **Real ping/restart over the wire** — `DevicesViewModel.ping/restart`
   simulate stochastic timing. Real implementation should send UDP
   control packets and parse acks.
-- **Real "apply mode" wire format** — `applyMode` simulates per-device
-  ack timing. Define a UDP control packet format and have devices
-  acknowledge by reporting their current mode via the regular telemetry
-  stream.
+- **Per-robot `command_bits` are always zero** — `BroadcastPacket`
+  reserves the bits (`RESET`, `ZERO_THETA`, ...) and accepts a
+  `commandBits: Map<Int, Int>` argument, but no UI path produces them.
+  The reset/restart flow in `DevicesViewModel.restart` currently runs a
+  Mock simulation instead of pushing a `RESET` bit through the next
+  broadcast.
+- **Teleop command vector** — `Teleop` mode in the per-mode breakdown
+  is documented as future. First iteration will probably extend the
+  per-robot block with a 2D command vector; needs a `version` bump.
+- **Team assignment in the broadcast** — `team` lives in `DeviceState`
+  and `UserPreferences` but is not in the wire packet. `TeamSoccer`
+  mode will need it; reusing the reserved byte in each robot slot
+  keeps `version = 1`.
+- **Real "apply mode" ack flow** — `applyMode` simulates per-device
+  ack timing. Real implementation should rely on robots reporting
+  their current mode in their reverse telemetry stream.
 - **Mode-specific settings UI** — the mode dropdown exists; per-mode
   tunable controls below it are not yet implemented. The framework is
   the `ModeSelectorPanel` composable; add a section underneath the
@@ -595,7 +752,16 @@ in place. Don't shrink this.
 - **Field axes jumping around** → `AprilTagDetector` filter alphas
   (`ORIGIN_FILTER_ALPHA_R / _T`).
 - **Bot pose values wrong** → `PoseTransformer.transformToFieldFrame`,
-  `TagConfig.FIELD_FRAME_*_M`, `tag_config.json` `field_frame` block.
+  `FieldConfig.FIELD_FRAME_*_M`, `field_config.yaml` `transforms_mm.tag0_to_field` block.
+- **Robot velocity in broadcast spikes / wraps** → `StateTracker`
+  (`velocityAlpha`, `shortestAngleDelta` for theta).
+- **Receiver gets zeroed positions when origin is in frame** →
+  `DetectionService.analyzeFrame` only updates `stateTracker` for robots
+  when `originVisible == true`; check that the origin tag is being
+  detected and not just barely missing.
+- **Wrong field interpretation on receiver** → first 4 bytes must be
+  `'ATOM'` (0x4D4F5441 LE) and `version == 1`; full layout is in the
+  `Network (UDP)` section above.
 - **Battery icon weird** → `DeviceCard.batteryFill` cubic + voltage
   constants.
 - **Dashboard missing a device / showing "Net"** →

@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.atomtag.ui.LocalDetectionService
 
 @Composable
 fun DashboardScreen(
@@ -38,6 +39,7 @@ fun DashboardScreen(
     val restartStates by viewModel.restartStates.collectAsStateWithLifecycle()
     val selectedMode by viewModel.selectedMode.collectAsStateWithLifecycle()
     val applyState by viewModel.applyState.collectAsStateWithLifecycle()
+    val service = LocalDetectionService.current
     var selectedTagId by remember { mutableStateOf<Int?>(null) }
 
     Scaffold { padding ->
@@ -60,7 +62,10 @@ fun DashboardScreen(
                             selected = selectedMode,
                             onSelect = viewModel::selectMode,
                             applyState = applyState,
-                            onApply = viewModel::applySelectedMode,
+                            onApply = {
+                                service?.setBroadcastMode(selectedMode)
+                                viewModel.applySelectedMode()
+                            },
                         )
                     }
                     items(items = state.devices, key = { it.tagId }) { device ->

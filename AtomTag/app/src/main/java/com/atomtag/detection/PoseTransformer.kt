@@ -1,7 +1,9 @@
 package com.atomtag.detection
 
+import com.atomtag.model.FieldConfig
 import com.atomtag.model.TagConfig
 import com.atomtag.model.TagPose
+import kotlin.math.atan2
 
 /**
  * Transforms detected tag poses from camera frame into the origin tag's coordinate frame.
@@ -22,9 +24,9 @@ object PoseTransformer {
         val zeroFrame = transformToOriginFrame(detections)
         if (!originVisible) return zeroFrame
 
-        val dx = TagConfig.FIELD_FRAME_X_M
-        val dy = TagConfig.FIELD_FRAME_Y_M
-        val dz = TagConfig.FIELD_FRAME_Z_M
+        val dx = FieldConfig.FIELD_FRAME_X_M
+        val dy = FieldConfig.FIELD_FRAME_Y_M
+        val dz = FieldConfig.FIELD_FRAME_Z_M
         return zeroFrame.map { pose ->
             val t = pose.transform.copyOf()
             t[3] = pose.transform[3] - dx
@@ -32,6 +34,31 @@ object PoseTransformer {
             t[11] = pose.transform[11] - dz
             TagPose(pose.tagId, t, pose.timestampMs)
         }
+    }
+
+    /**
+     * Yaw (rotation about field-Z) of a tag from its field-frame transform,
+     * in radians. Defined as the angle of the tag's local +X axis in the
+     * field XY plane: atan2(R[1,0], R[0,0]) — i.e. atan2(transform[4],
+     * transform[0]) for the row-major 4×4 used everywhere else.
+     */
+    fun yawFromFieldFrameTransform(transform: FloatArray): Float {
+        return atan2(transform[4], transform[0])
+    }
+
+    /**
+     * Returns the camera's pose expressed in the field frame, as a 4×4 row-major
+     * matrix. Returns null if the origin tag is not visible. The translation
+     * column is the camera origin in field-frame coordinates; the 3×3 rotation
+     * block rotates a vector from camera frame into field frame.
+     */
+    fun cameraToFieldTransform(detections: List<TagPose>): FloatArray? {
+        val origin = detections.firstOrNull { it.tagId == TagConfig.ORIGIN_TAG_ID } ?: return null
+        val inv = invertTransform(origin.transform)
+        inv[3]  -= FieldConfig.FIELD_FRAME_X_M
+        inv[7]  -= FieldConfig.FIELD_FRAME_Y_M
+        inv[11] -= FieldConfig.FIELD_FRAME_Z_M
+        return inv
     }
 
     /**

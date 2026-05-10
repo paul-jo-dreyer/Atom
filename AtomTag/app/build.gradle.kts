@@ -76,4 +76,7 @@ dependencies {
 
     // OpenCV (includes ArUco/AprilTag in objdetect since 4.7+)
     implementation("org.opencv:opencv:4.9.0")
+
+    // YAML config loader (for field_config.yaml)
+    implementation("org.yaml:snakeyaml:2.2")
 }

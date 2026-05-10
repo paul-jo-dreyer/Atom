@@ -20,10 +20,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.atomtag.MainActivity
 import com.atomtag.R
+import com.atomtag.data.AppMode
 import com.atomtag.detection.AprilTagDetector
+import com.atomtag.detection.BallDetector
 import com.atomtag.detection.PoseTransformer
-import com.atomtag.model.PoseVector
+import com.atomtag.detection.StateTracker
 import com.atomtag.model.TagConfig
+import com.atomtag.network.BroadcastPacket
 import com.atomtag.network.UdpBroadcaster
 import com.atomtag.ui.AxisOverlayView
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.imgproc.Imgproc
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -45,10 +49,19 @@ data class CameraStats(
 
 class DetectionService : LifecycleService() {
 
-    private val poseVector = PoseVector()
     private val broadcaster = UdpBroadcaster()
     private val detector = AprilTagDetector()
+    private val ballDetector = BallDetector()
+    private val stateTracker = StateTracker()
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    /** All non-origin tag ids, sorted ascending — fixed slot layout for the broadcast packet. */
+    private val robotTagIds: List<Int> by lazy {
+        TagConfig.allTagIds().filter { it != TagConfig.ORIGIN_TAG_ID }.sorted()
+    }
+
+    @Volatile private var broadcastMode: AppMode = AppMode.Sandbox
+    fun setBroadcastMode(mode: AppMode) { broadcastMode = mode }
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var preview: Preview? = null
@@ -121,6 +134,7 @@ class DetectionService : LifecycleService() {
         broadcaster.stop()
         analysisExecutor.shutdown()
         detector.release()
+        ballDetector.release()
     }
 
     private fun startCamera() {
@@ -166,6 +180,7 @@ class DetectionService : LifecycleService() {
 
     private fun analyzeFrame(imageProxy: ImageProxy) {
         var gray: Mat? = null
+        var rgb: Mat? = null
         try {
             val rotation = imageProxy.imageInfo.rotationDegrees
             gray = imageProxyToGrayMat(imageProxy)
@@ -173,19 +188,62 @@ class DetectionService : LifecycleService() {
 
             val shouldDrawAxes = _drawAxes.value
             val shouldDrawLabels = _drawLabels.value
+            val shouldDrawFieldOverlay = _showVirtualBackground.value
 
             detector.initIntrinsics(gray.cols(), gray.rows())
-            val detections = detector.detect(gray, projectAxes = shouldDrawAxes)
+            val detections = detector.detect(
+                gray,
+                projectAxes = shouldDrawAxes,
+                projectFieldOverlay = shouldDrawFieldOverlay,
+            )
 
             val rawPoses = detections.map { it.pose }
             val transformed = PoseTransformer.transformToFieldFrame(rawPoses)
             val originVisible = rawPoses.any { it.tagId == TagConfig.ORIGIN_TAG_ID }
-            for (pose in transformed) poseVector.update(pose)
+
+            rgb = imageProxyToRgbMat(imageProxy)
+            val cameraToField = PoseTransformer.cameraToFieldTransform(rawPoses)
+            val ballResult = if (rgb != null && detector.intrinsicsReady()) {
+                ballDetector.detect(rgb, detector.cameraMatrix(), cameraToField)
+            } else null
 
             val now = System.currentTimeMillis()
+
+            // Robot state — only meaningful when origin is visible (otherwise the
+            // transformed poses fall back to camera frame, not field frame).
+            val robotPosesById = if (originVisible) {
+                transformed.filter { it.tagId != TagConfig.ORIGIN_TAG_ID }.associateBy { it.tagId }
+            } else emptyMap()
+            val robotStates = robotTagIds.map { tagId ->
+                val pose = robotPosesById[tagId]
+                tagId to if (pose != null) {
+                    val theta = PoseTransformer.yawFromFieldFrameTransform(pose.transform)
+                    stateTracker.updateRobot(tagId, pose.tx, pose.ty, theta, now)
+                } else {
+                    stateTracker.robotNotDetected()
+                }
+            }
+
+            // Ball tracker. Only valid when origin was visible during ball detection;
+            // otherwise the gated candidate's fieldXYZ would be null, mark not detected.
+            val ballXyz = ballResult?.candidates
+                ?.filter { it.passedRadiusGate && it.fieldXYZ != null }
+                ?.maxByOrNull { it.pixelRadius }
+                ?.fieldXYZ
+            val ballState = if (ballXyz != null) {
+                stateTracker.updateBall(ballXyz[0].toFloat(), ballXyz[1].toFloat(), now)
+            } else stateTracker.ballNotDetected()
+
             if (now - lastBroadcastTime >= TagConfig.BROADCAST_INTERVAL_MS) {
                 lastBroadcastTime = now
-                broadcaster.broadcast(poseVector)
+                val packet = BroadcastPacket.build(
+                    timestampUs = now * 1000L,
+                    mode = broadcastMode,
+                    originVisible = originVisible,
+                    ball = ballState,
+                    robotStates = robotStates,
+                )
+                broadcaster.broadcast(packet)
                 broadcastsInWindow++
             }
 
@@ -228,12 +286,28 @@ class DetectionService : LifecycleService() {
             val fieldAxes = if (shouldDrawAxes) {
                 detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }?.fieldFrameAxes
             } else null
+            val originDet = detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }
+            val fieldLines = if (shouldDrawFieldOverlay) originDet?.fieldLines else null
+            val goalieBoxOutline = if (shouldDrawFieldOverlay) originDet?.goalieBoxOutline else null
+            val ballOverlay = ballResult?.candidates?.map {
+                AxisOverlayView.BallOverlayData(
+                    pixelU = it.pixelU.toFloat(),
+                    pixelV = it.pixelV.toFloat(),
+                    pixelRadius = it.pixelRadius.toFloat(),
+                    passedGate = it.passedRadiusGate,
+                )
+            } ?: emptyList()
             val cols = gray.cols()
             val rows = gray.rows()
             overlayRef?.let { ov ->
                 ov.post {
-                    if (overlayData.isNotEmpty() || fieldAxes != null) {
-                        ov.update(overlayData, cols, rows, rotation, fieldAxes)
+                    val hasContent = overlayData.isNotEmpty() ||
+                        fieldAxes != null ||
+                        ballOverlay.isNotEmpty() ||
+                        !fieldLines.isNullOrEmpty() ||
+                        !goalieBoxOutline.isNullOrEmpty()
+                    if (hasContent) {
+                        ov.update(overlayData, cols, rows, rotation, fieldAxes, ballOverlay, fieldLines, goalieBoxOutline)
                     } else {
                         ov.clear()
                     }
@@ -241,8 +315,75 @@ class DetectionService : LifecycleService() {
             }
         } finally {
             gray?.release()
+            rgb?.release()
             imageProxy.close()
         }
+    }
+
+    /**
+     * Build an NV21-formatted byte array from a YUV_420_888 ImageProxy and decode
+     * to RGB via OpenCV. NV21 layout is YYYY... then VUVU... interleaved.
+     *
+     * Returns null if the planes don't lay out the way we expect (defensive — on
+     * the chance some device exposes a non-standard YUV layout we'll just skip
+     * ball detection that frame rather than crash).
+     */
+    private fun imageProxyToRgbMat(imageProxy: ImageProxy): Mat? {
+        val width = imageProxy.width
+        val height = imageProxy.height
+        if (width <= 0 || height <= 0) return null
+
+        val yPlane = imageProxy.planes[0]
+        val uPlane = imageProxy.planes[1]
+        val vPlane = imageProxy.planes[2]
+
+        val ySize = width * height
+        val uvSize = 2 * (width / 2) * (height / 2)
+        val nv21 = ByteArray(ySize + uvSize)
+
+        val yBuf = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        if (yRowStride == width) {
+            yBuf.position(0)
+            yBuf.get(nv21, 0, ySize)
+        } else {
+            for (row in 0 until height) {
+                yBuf.position(row * yRowStride)
+                yBuf.get(nv21, row * width, width)
+            }
+        }
+
+        val uPixelStride = uPlane.pixelStride
+        val vPixelStride = vPlane.pixelStride
+        val uRowStride = uPlane.rowStride
+        val vRowStride = vPlane.rowStride
+        if (uPixelStride != vPixelStride || uRowStride != vRowStride) return null
+
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val uBytes = ByteArray(uBuf.remaining()).also { uBuf.position(0); uBuf.get(it) }
+        val vBytes = ByteArray(vBuf.remaining()).also { vBuf.position(0); vBuf.get(it) }
+
+        val uvHeight = height / 2
+        val uvWidth = width / 2
+        var dst = ySize
+        for (row in 0 until uvHeight) {
+            val srcRow = row * uRowStride
+            for (col in 0 until uvWidth) {
+                val srcIdx = srcRow + col * uPixelStride
+                if (srcIdx >= vBytes.size || srcIdx >= uBytes.size) return null
+                nv21[dst]     = vBytes[srcIdx]
+                nv21[dst + 1] = uBytes[srcIdx]
+                dst += 2
+            }
+        }
+
+        val yuv = Mat(height + height / 2, width, CvType.CV_8UC1)
+        yuv.put(0, 0, nv21)
+        val rgb = Mat()
+        Imgproc.cvtColor(yuv, rgb, Imgproc.COLOR_YUV2RGB_NV21)
+        yuv.release()
+        return rgb
     }
 
     private fun imageProxyToGrayMat(imageProxy: ImageProxy): Mat {
