@@ -11,6 +11,10 @@ rewards. If you want asymmetric weighting, compose two instances and
 filter each one on a single info key (subclass the term, or use distinct
 named subclasses — TBD if we ever need it).
 
+**Sign convention**: use a POSITIVE weight (e.g. `weight=+50.0`). The
+term itself carries the sign (+1 for scoring, -1 for conceding); the
+weight is just the sparse-event magnitude.
+
 Gated by `info["ball_touched"]` — credit-hack guard
 ---------------------------------------------------
 With random ball initial velocity (see `InitialStateRanges`), the ball
@@ -46,6 +50,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class GoalScoredReward(RewardTerm):
     name = "goal_scored"
+    expected_weight_sign = +1
 
     def __call__(self, ctx: RewardContext) -> float:
         if not ctx.info.get("ball_touched", False):

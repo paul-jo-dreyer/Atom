@@ -99,6 +99,93 @@ def test_negative_termination_penalty_rejected() -> None:
         GoalieBoxPenalty(termination_penalty=-1.0)
 
 
+def test_depth_floor_out_of_range_rejected() -> None:
+    with pytest.raises(ValueError, match="depth_floor"):
+        GoalieBoxPenalty(depth_floor=-0.1)
+    with pytest.raises(ValueError, match="depth_floor"):
+        GoalieBoxPenalty(depth_floor=1.1)
+
+
+# ---------------------------------------------------------------------------
+# depth_floor — boundary penalty rises smoothly from 0 (legacy) to u^p
+# ---------------------------------------------------------------------------
+
+
+def test_depth_floor_zero_recovers_legacy_boundary_silence() -> None:
+    """depth_floor=0 (default) ⟹ boundary still pays 0 even at near-
+    terminal time, matching the original potential-field design."""
+    term = _term(depth_floor=0.0)
+    inner_edge_x = FIELD_X_HALF - BOX_DEPTH
+    ctx = _ctx(rx=inner_edge_x, ry=0.0, time_in_box_norm=0.99)
+    assert term(ctx) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_depth_floor_one_makes_penalty_uniform_inside() -> None:
+    """depth_floor=1 ⟹ the per-step penalty is uniform across the box
+    interior; boundary, centroid, and deep all give u^p."""
+    term = _term(depth_floor=1.0, power=3.0)
+    trigger_norm = TRIGGER_TIME / TERMINAL_TIME
+    # u=0.5 ⟹ u^p = 0.125 (matches test_ramp_polynomial_shape but
+    # now everywhere inside the box, not just at centroid).
+    time_norm = trigger_norm + 0.5 * (1.0 - trigger_norm)
+    inner_edge_x = FIELD_X_HALF - BOX_DEPTH + 1e-4   # just inside
+    centroid_x = FIELD_X_HALF - 0.5 * BOX_DEPTH
+    deep_x = FIELD_X_HALF - BOX_DEPTH + 0.06          # 1 robot deep
+    for x in (inner_edge_x, centroid_x, deep_x):
+        ctx = _ctx(rx=x, ry=0.0, time_in_box_norm=time_norm)
+        assert term(ctx) == pytest.approx(0.125, abs=1e-3), (
+            f"x={x}: expected 0.125, got {term(ctx)}"
+        )
+
+
+def test_depth_floor_half_blends_linearly() -> None:
+    """depth_floor=0.5 with u^p=1 (terminal time, just below violation):
+    boundary should be ~0.5, centroid ~1.0."""
+    term = _term(depth_floor=0.5, power=1.0)  # linear ramp for cleaner math
+    # u=1 ⟹ u^p = 1. time_norm = 1.0 (just below terminal trigger).
+    # Use 0.999 to avoid the violation flag interaction.
+    time_norm = 0.99999
+    inner_edge_x = FIELD_X_HALF - BOX_DEPTH + 1e-4
+    centroid_x = FIELD_X_HALF - 0.5 * BOX_DEPTH
+    val_boundary = term(_ctx(rx=inner_edge_x, ry=0.0, time_in_box_norm=time_norm))
+    val_centroid = term(_ctx(rx=centroid_x, ry=0.0, time_in_box_norm=time_norm))
+    assert val_boundary == pytest.approx(0.5, abs=5e-3)
+    assert val_centroid == pytest.approx(1.0, abs=5e-3)
+
+
+def test_depth_floor_does_not_change_outside_zero() -> None:
+    """Outside the box, penalty is still 0 regardless of depth_floor.
+    The boundary cliff is preserved."""
+    term = _term(depth_floor=1.0)
+    just_outside_x = FIELD_X_HALF - BOX_DEPTH - 0.005
+    ctx = _ctx(rx=just_outside_x, ry=0.0, time_in_box_norm=0.99)
+    assert term(ctx) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_depth_floor_centroid_unchanged() -> None:
+    """The peak per-step penalty (centroid / depth-saturated interior)
+    is the same at all depth_floor values — calibration invariant."""
+    cx = FIELD_X_HALF - 0.5 * BOX_DEPTH
+    trigger_norm = TRIGGER_TIME / TERMINAL_TIME
+    time_norm = trigger_norm + 0.5 * (1.0 - trigger_norm)
+    for floor in (0.0, 0.25, 0.5, 0.75, 1.0):
+        term = _term(depth_floor=floor, power=3.0)
+        val = term(_ctx(rx=cx, ry=0.0, time_in_box_norm=time_norm))
+        # u^p = 0.5^3 = 0.125 at centroid (depth_factor=1 regardless of floor)
+        assert val == pytest.approx(0.125, abs=1e-3), (
+            f"depth_floor={floor}: centroid penalty changed; got {val}"
+        )
+
+
+def test_depth_floor_pre_trigger_is_silent() -> None:
+    """Even with depth_floor=1, no penalty fires before the trigger
+    time — entry remains free."""
+    term = _term(depth_floor=1.0)
+    cx = FIELD_X_HALF - 0.5 * BOX_DEPTH
+    ctx = _ctx(rx=cx, ry=0.0, time_in_box_norm=0.5 * TRIGGER_TIME / TERMINAL_TIME)
+    assert term(ctx) == pytest.approx(0.0, abs=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # Time ramp — silent below trigger, polynomial above
 # ---------------------------------------------------------------------------

@@ -89,9 +89,28 @@ class RewardTerm(ABC):
 
     Stateless contract: `__call__` is a pure function of `RewardContext`.
     No attribute writes inside `__call__`. No `self._prev_*` fields.
-    """
+
+    Subclasses also override `expected_weight_sign` to declare the sign
+    they want their weight to carry (used by the YAML config validator
+    to warn on likely sign-flip bugs):
+
+        +1  weight should be POSITIVE — either the term is a reward
+            (e.g. BallAlignmentReward) or it's a signed-output term
+            whose own sign carries the direction (e.g. BallProgressReward
+            returns m/s of motion-toward-goal: positive when good,
+            negative when bad).
+        -1  weight should be NEGATIVE — term returns an UNSIGNED
+            magnitude in [0, k] and the negative weight makes it a
+            penalty (e.g. StallPenaltyReward, ObstacleContactPenalty).
+         0  no opinion / either sign is meaningful (the default).
+
+    The validator only WARNS on a sign mismatch — it doesn't refuse to
+    construct. Misconfiguration silently training the wrong objective
+    is the failure mode this guards against; a warning is enough to
+    flag it on stdout / TensorBoard launch."""
 
     name: str = "unnamed"
+    expected_weight_sign: int = 0
 
     def __init__(self, weight: float = 1.0) -> None:
         self.weight = float(weight)

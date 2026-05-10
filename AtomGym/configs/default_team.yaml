@@ -5,8 +5,15 @@
 
 env:
   max_episode_steps: 400
-  goalie_box_depth: 0.12
-  goalie_box_y_half: 0.10
+  # GAME RULE — see default_solo.yaml for the full explanation. Enable
+  # the box-time rule by setting `goalie_box_terminal_time > 0`; the
+  # `goalie_box:` reward below then inherits this + the geometry.
+  goalie_box_depth: 0.13
+  goalie_box_y_half: 0.11
+  # Set goalie_box_corner_radius > 0 to round the interior corners of
+  # the box (and ENSURE the visual style's
+  # `markings.goalie_box_corner_radius_m` matches). 0 ⟹ sharp.
+  goalie_box_corner_radius: 0.0
   goalie_box_terminal_time: 0.0
   manipulator: null
 
@@ -24,13 +31,12 @@ rewards:
   ball_alignment:
     weight: 0.3
 
-  # Disabled by default. Enable WITH `env.goalie_box_terminal_time > 0`.
+  # Active when env.goalie_box_terminal_time > 0 above. Inherits
+  # game-rule values (terminal_time, goalie_box_depth, goalie_box_y_half)
+  # from `env:` — the loader rejects setting them here.
   # goalie_box:
   #   weight: -50.0
-  #   trigger_time: 2.0
-  #   terminal_time: 3.0
-  #   power: 3.0
-  #   termination_penalty: 1.0
+  #   trigger_time: 2.0            # seconds before the ramp activates
+  #   power: 3.0                   # polynomial steepness of the ramp
+  #   termination_penalty: 1.0     # sparse cost on violation, in `weight` units
   #   depth_saturation: 0.06
-  #   goalie_box_depth: 0.12
-  #   goalie_box_y_half: 0.10

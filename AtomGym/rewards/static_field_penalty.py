@@ -86,17 +86,20 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 
 class StaticFieldPenalty(RewardTerm):
-    """Sigmoid potential field penalty over walls + opposing goalie box.
+    """Sigmoid potential field penalty over field-perimeter walls
+    (and optionally the opposing goalie box, see `include_goalie_box`).
 
     The grid is built once at construction from the supplied geometry
     and sigmoid parameters; per-step lookup is a bilinear interpolation.
-    Use with a POSITIVE weight: the term itself returns values in [0, 1],
-    so the penalty contribution to total reward is `weight * lookup`.
-    Use a positive weight if your composite already negates penalty
-    terms; otherwise set weight negative directly.
+
+    **Sign convention**: use a NEGATIVE weight (e.g. `weight=-0.5`). The
+    term returns an UNSIGNED magnitude in [0, 1]; the negative weight
+    turns "more proximity to a hazard" into "more negative reward".
+    Positive weight would actively reward wall-hugging.
     """
 
     name = "static_field"
+    expected_weight_sign = -1
 
     def __init__(
         self,

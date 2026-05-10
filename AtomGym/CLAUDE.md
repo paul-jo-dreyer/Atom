@@ -232,10 +232,25 @@ provides:
    integrated cost of "loiter to terminal" strictly exceeds a goal
    reward — closes the "score-then-violate" exploit.
 
-All three knobs (`trigger_time`, `terminal_time`, `power`,
-`termination_penalty`, `depth_saturation`) live in the YAML config.
-The reward's `terminal_time` MUST equal `env.goalie_box_terminal_time`
-since the obs's normalised timer is `min(elapsed / terminal, 1.0)`.
+**Game rule vs. training shaping — single source of truth.** The
+parameters split principled into two groups:
+
+- **Game-rule** (env-owned): `goalie_box_terminal_time` (the budget),
+  `goalie_box_depth`, `goalie_box_y_half`. These define what the game
+  IS — when termination fires, where the box sits.
+- **Training shaping** (reward-owned): `weight`, `trigger_time`,
+  `power`, `termination_penalty`, `depth_saturation`. These define
+  HOW we shape the learning signal *within* the rule. They have no
+  game-mechanical meaning.
+
+The reward inherits the game-rule values from `env:` automatically at
+config-load time (see `_REWARD_INHERITS_FROM_ENV` in
+`training/config.py`). Setting them inside the reward block raises
+`ConfigError` — there's only one place to set them. Configuring the
+reward while `env.goalie_box_terminal_time = 0` (rule disabled) also
+raises a targeted error pointing at the env key, instead of letting
+the user wade through a cryptic `terminal_time must be > trigger_time`
+from the constructor.
 
 Default in shipped configs: rule **disabled** (`terminal_time = 0`)
 so the legacy "pass through freely" behaviour is preserved. Enable
@@ -315,6 +330,14 @@ breakdown key). Loader behaviour:
 - **Validator**: `validate_and_construct(cls, params)` introspects
   `cls.__init__` via `inspect.signature` and rejects unknown keys
   (typo guard) + missing required kwargs. Raises `ConfigError`.
+- **Sign check**: each reward class declares
+  `expected_weight_sign ∈ {-1, 0, +1}`. The validator emits a loud
+  `ConfigSignWarning` (NOT an error — some ablations want a
+  reversed sign deliberately) when a YAML weight contradicts it.
+  Catches the most common reward-shaping footgun: writing a
+  positive weight on a penalty term and silently training the
+  policy to optimise against the objective. See each term's
+  docstring "Sign convention" line for what it expects.
 - **Omitting a reward key disables that term** — it's not added to
   the composite. The composite is exactly as long as the YAML says.
 - **Adding a new reward term**: register `name → class` in

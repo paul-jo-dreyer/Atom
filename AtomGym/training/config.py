@@ -70,6 +70,7 @@ load time.
 from __future__ import annotations
 
 import inspect
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,7 @@ _ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
     "max_episode_steps",
     "goalie_box_depth",
     "goalie_box_y_half",
+    "goalie_box_corner_radius",
     "goalie_box_terminal_time",
     "manipulator",
     "physics_dt",
@@ -119,11 +121,132 @@ _ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
 })
 
 
+# Game-rule parameters that exist on BOTH the env constructor and a
+# reward term. The split is principled:
+#
+#   * env owns the GAME RULE — what's legal, when termination fires.
+#     `goalie_box_terminal_time` (the budget) and the box geometry are
+#     properties of the game itself.
+#   * reward owns the TRAINING SHAPING — `weight`, `trigger_time`,
+#     `power`, `termination_penalty`, `depth_saturation`. These define
+#     HOW we shape the learning signal *within* the game's rules. They
+#     have no game-mechanical meaning.
+#
+# Game-rule values flow from env → reward at config-load time so
+# there's a single source of truth. Setting them inside the reward
+# block is forbidden — the loader rejects it with a clear error.
+#
+# Schema: { reward_name: { reward_kwarg: env_kwarg } }
+_REWARD_INHERITS_FROM_ENV: dict[str, dict[str, str]] = {
+    "goalie_box": {
+        "terminal_time": "goalie_box_terminal_time",
+        "goalie_box_depth": "goalie_box_depth",
+        "goalie_box_y_half": "goalie_box_y_half",
+        "goalie_box_corner_radius": "goalie_box_corner_radius",
+    },
+}
+
+
+# Cross-section auto-fill: parameters that exist on both env constructor
+# AND a reward term, where they MUST agree for the system to behave
+# correctly. The env is the source of truth; the loader copies the
+# value into the reward's params dict before construction so the user
+# never specifies the same number twice.
+#
+# Schema: { reward_name: { reward_kwarg_name: env_kwarg_name } }
+#
+# If the user explicitly sets one of these in the reward block, we raise
+# ConfigError — there's only one place to set it. If `env` doesn't
+# supply the value, the reward's __init__ will reject the auto-filled
+# default (e.g. GoalieBoxPenalty rejects terminal_time=0 since
+# terminal_time must exceed trigger_time), giving a clear error.
+_REWARD_AUTOFILL_FROM_ENV: dict[str, dict[str, str]] = {
+    "goalie_box": {
+        "terminal_time": "goalie_box_terminal_time",
+        "goalie_box_depth": "goalie_box_depth",
+        "goalie_box_y_half": "goalie_box_y_half",
+    },
+}
+
+
 class ConfigError(ValueError):
     """Raised on any structural problem in a training-config YAML —
     unknown keys, missing required reward kwargs, type-mismatched
     values, etc. Inherits from ValueError so existing `except
     ValueError` callers still catch it."""
+
+
+class ConfigSignWarning(UserWarning):
+    """Emitted (NOT raised) when a YAML weight contradicts the
+    reward term's `expected_weight_sign`. Likely a sign-flip bug
+    that would silently train the wrong objective. Surfaces via
+    Python's `warnings` machinery so it shows up on stdout / in
+    pytest output by default but doesn't refuse to construct (some
+    legitimate ablations want a deliberately reversed sign)."""
+
+
+def _inherit_env_rules(
+    name: str, params: dict[str, Any], env_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply the env-owns-game-rules inheritance pattern: for each
+    reward kwarg listed in `_REWARD_INHERITS_FROM_ENV`, pull the value
+    from the env section and inject it into the reward's params.
+
+    Errors if the user explicitly set a game-rule value inside the
+    reward block — there's only one place to set it.
+
+    Errors with a specific message if the goalie-box rule is configured
+    via the reward but the env hasn't enabled it (terminal_time = 0
+    means rule disabled). Without this special case the user would see
+    a confusing "GoalieBoxPenalty: terminal_time must be > trigger_time"
+    error, which is technically correct but doesn't say where to fix it."""
+    inheritance = _REWARD_INHERITS_FROM_ENV.get(name)
+    if not inheritance:
+        return params
+    for reward_kwarg, env_kwarg in inheritance.items():
+        if reward_kwarg in params:
+            raise ConfigError(
+                f"reward {name!r}: must not set {reward_kwarg!r} in the "
+                f"reward block — that's a game-rule value owned by "
+                f"env.{env_kwarg!r}. Set env.{env_kwarg} once and the "
+                f"reward will inherit it."
+            )
+        if env_kwarg in env_kwargs:
+            params[reward_kwarg] = env_kwargs[env_kwarg]
+    # Targeted check for the most likely user-facing error: rule
+    # disabled at the env level but the shaping reward is configured.
+    if name == "goalie_box":
+        if env_kwargs.get("goalie_box_terminal_time", 0.0) <= 0.0:
+            raise ConfigError(
+                "rewards.goalie_box is configured but env.goalie_box_terminal_time "
+                "is 0 (rule disabled). The reward shapes behaviour against the "
+                "game rule — without the rule there's nothing to shape. "
+                "Set env.goalie_box_terminal_time > 0 to enable, or remove the "
+                "rewards.goalie_box block."
+            )
+    return params
+
+
+def _check_weight_sign(cls: type, weight: float) -> None:
+    """If the reward class declares `expected_weight_sign != 0` and
+    the supplied weight has the opposite sign, emit a warning. Zero
+    weight skips the check (a no-op term doesn't need an opinion on
+    sign). The +1 / -1 convention is documented on `RewardTerm`."""
+    expected = getattr(cls, "expected_weight_sign", 0)
+    if expected == 0 or weight == 0.0:
+        return
+    actual = +1 if weight > 0 else -1
+    if actual != expected:
+        wanted = "POSITIVE" if expected > 0 else "NEGATIVE"
+        warnings.warn(
+            f"{cls.__name__}: weight={weight} has the wrong sign — this "
+            f"term expects a {wanted} weight (see its docstring). The "
+            f"agent will be optimised against the term, not for it. "
+            f"If this is intentional (e.g. an ablation), ignore this "
+            f"warning. Otherwise flip the sign in your YAML.",
+            ConfigSignWarning,
+            stacklevel=3,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +288,8 @@ def validate_and_construct(
         raise ConfigError(
             f"reward {cls.__name__}: missing required keys {sorted(missing)}."
         )
+    if "weight" in params:
+        _check_weight_sign(cls, float(params["weight"]))
     try:
         return cls(**params)
     except TypeError as e:
@@ -240,6 +365,11 @@ def load_training_config(path: str | Path) -> TrainingConfig:
             raise ConfigError(
                 f"reward {name!r}: params must be a mapping, got {type(params).__name__}"
             )
+        # Game-rule inheritance: env is the source of truth for game-rule
+        # parameters (terminal_time, box geometry). Copy them into the
+        # reward params before construction so the reward block stays
+        # focused on training-shaping knobs.
+        params = _inherit_env_rules(name, dict(params), env_kwargs)
         cls = REWARD_REGISTRY[name]
         rewards.append(validate_and_construct(cls, params))
 

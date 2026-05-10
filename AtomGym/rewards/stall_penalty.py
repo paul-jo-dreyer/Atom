@@ -38,9 +38,12 @@ Properties
     (0.5, 0.5)    → 0.5    (no benefit to adding Ω to V)
     (1, 1)        → 0.0
 
-Use with a NEGATIVE weight (e.g. weight=-0.3) to turn this into a
-per-step nudge away from stalling. Larger magnitude = stronger push.
-If the policy still loiters in low-magnitude actions after this, the
+**Sign convention**: use a NEGATIVE weight (e.g. `weight=-0.3`). The
+term returns an UNSIGNED magnitude in [0, 1] (1 at full stall, 0 at
+full action); the negative weight turns "more stalling" into "more
+negative reward". Positive weight would actively reward stalling.
+Larger |weight| ⟹ stronger push out of the do-nothing attractor. If
+the policy still loiters in low-magnitude actions after this, the
 basin can be tightened by clipping the input — see comments in the
 `__call__` method.
 """
@@ -52,6 +55,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class StallPenaltyReward(RewardTerm):
     name = "stall_penalty"
+    expected_weight_sign = -1
 
     def __call__(self, ctx: RewardContext) -> float:
         v = ctx.action_view.v(ctx.action)

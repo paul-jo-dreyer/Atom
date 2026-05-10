@@ -80,6 +80,8 @@ from AtomGym.training.reference_opponent import ReferenceOpponent  # noqa: E402
 from AtomGym.training.snapshot_pool import SnapshotPool  # noqa: E402
 from AtomGym.training.team_worker_wrapper import TeamWorkerWrapper  # noqa: E402
 from AtomGym.training.train import (  # noqa: E402
+    EpisodeOutcomeCallback,
+    GoalRateCallback,
     RewardBreakdownCallback,
     _parse_grid,
     _term_kwargs,
@@ -428,6 +430,8 @@ def main() -> None:
     ]
     if not args.disable_reward_breakdown:
         callbacks.append(RewardBreakdownCallback())
+    callbacks.append(GoalRateCallback(window=100))
+    callbacks.append(EpisodeOutcomeCallback(window=100))
     if args.render_every is not None:
         gif_dir = output_dir / "gifs"
         rows, cols = args.render_grid

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,7 @@ def make_vec_env(
     own freshly-built reward composite — reward terms are stateless
     per `_base_reward.py`'s contract, but constructing per-worker is
     safer than sharing instances across processes."""
+
     def _factory(i: int):
         # Re-build the rewards inside the factory so each worker (under
         # SubprocVecEnv) has its own instances. The list-of-instances
@@ -168,6 +170,191 @@ class RewardBreakdownCallback(BaseCallback):
             for name, value in breakdown.items():
                 self.logger.record_mean(f"reward/{name}", float(value))
         return True
+
+
+class GoalRateCallback(BaseCallback):
+    """Sliding-window goal-rate per episode, decoupled from reward weight.
+
+    `reward/goal_scored` mixes magnitude and frequency: a doubled
+    `goal_scored.weight` looks like learning even if scoring rate is
+    flat. This callback strips the weight out and reports the raw
+    "fraction of episodes that ended in a goal" over the last `window`
+    completed episodes — the same window-mean style SB3 already uses
+    for `rollout/ep_rew_mean`.
+
+    Metrics:
+        goals/for_us_rate     — fraction of episodes where this team scored
+        goals/against_us_rate — fraction where the other side scored
+                                (own-goal in solo, opponent goal in team)
+        goals/net_rate        — for_us minus against_us
+
+    The env emits `info["scored_for_us"]` / `info["scored_against_us"]`
+    edge-detected on the terminating step, and Monitor sets
+    `info["episode"]` on episode end — we latch the goal flags during
+    the episode and push to the deque when Monitor signals close.
+    """
+
+    def __init__(self, window: int = 100) -> None:
+        super().__init__()
+        self.window = int(window)
+        self._for_us: deque[float] = deque(maxlen=self.window)
+        self._against_us: deque[float] = deque(maxlen=self.window)
+        # Per-env latches; sized lazily on first step (we don't know
+        # n_envs until SB3 binds the callback to the model).
+        self._scored_for: list[bool] = []
+        self._scored_against: list[bool] = []
+
+    def _on_step(self) -> bool:
+        infos: list[dict[str, Any]] = self.locals.get("infos", [])
+        if len(self._scored_for) != len(infos):
+            self._scored_for = [False] * len(infos)
+            self._scored_against = [False] * len(infos)
+        for i, info in enumerate(infos):
+            if info.get("scored_for_us", False):
+                self._scored_for[i] = True
+            if info.get("scored_against_us", False):
+                self._scored_against[i] = True
+            # Monitor sets info["episode"] exactly on the step the
+            # episode terminated/truncated. Push then reset.
+            if "episode" in info:
+                self._for_us.append(1.0 if self._scored_for[i] else 0.0)
+                self._against_us.append(1.0 if self._scored_against[i] else 0.0)
+                self._scored_for[i] = False
+                self._scored_against[i] = False
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if not self._for_us:
+            return
+        for_rate = sum(self._for_us) / len(self._for_us)
+        against_rate = sum(self._against_us) / len(self._against_us)
+        self.logger.record("goals/for_us_rate", for_rate)
+        self.logger.record("goals/against_us_rate", against_rate)
+        self.logger.record("goals/net_rate", for_rate - against_rate)
+        self.logger.record("goals/window_episodes", len(self._for_us))
+
+
+class EpisodeOutcomeCallback(BaseCallback):
+    """Sliding-window classification of how each episode ended.
+
+    `goals/*_rate` answers "did the policy score?" but not "what
+    happened on the episodes it didn't?" A flat 60% scoring rate could
+    be 40% timeouts (approach-geometry problem), 40% own-goals
+    (defensive failure), 40% box-violations (rule-budget exhaustion),
+    or any mix — and each points to a different fix. This callback
+    splits the negative space.
+
+    Every episode terminates with exactly one of:
+
+        scored_for_us       — learner scored on the opposing goal
+        scored_against_us   — own-goal in solo, opponent goal in team
+        box_violation_self  — learner exhausted the goalie-box budget
+                              (only fires when env.goalie_box_terminal_time > 0)
+        box_violation_opp   — opponent exhausted the goalie-box budget
+                              (team only; learner-favourable termination)
+        timeout             — episode hit max_episode_steps (truncated)
+
+    Reports each as a fraction of the last `window` completed episodes
+    under `outcomes/<name>_rate`. The five rates sum to 1.0 once the
+    window has any episodes — read the block as a stacked breakdown of
+    where the policy is ending up. Resolution rule when multiple
+    terminal flags fire on the same substep: scoring beats box
+    violation (the goal conceptually completes first).
+    """
+
+    _OUTCOMES = (
+        "scored_for_us",
+        "scored_against_us",
+        "box_violation_self",
+        "box_violation_opp",
+        "timeout",
+    )
+
+    def __init__(self, window: int = 100) -> None:
+        super().__init__()
+        self.window = int(window)
+        self._counts: dict[str, deque[float]] = {
+            name: deque(maxlen=self.window) for name in self._OUTCOMES
+        }
+        # Per-env latches for terminal info flags. Sized lazily on first
+        # step (n_envs isn't known until SB3 binds the callback).
+        self._latched_for: list[bool] = []
+        self._latched_against: list[bool] = []
+        self._latched_box_self: list[bool] = []
+        self._latched_box_opp: list[bool] = []
+
+    def _ensure_capacity(self, n: int) -> None:
+        if len(self._latched_for) != n:
+            self._latched_for = [False] * n
+            self._latched_against = [False] * n
+            self._latched_box_self = [False] * n
+            self._latched_box_opp = [False] * n
+
+    def _classify(self, i: int) -> str:
+        if self._latched_for[i]:
+            return "scored_for_us"
+        if self._latched_against[i]:
+            return "scored_against_us"
+        if self._latched_box_self[i]:
+            return "box_violation_self"
+        if self._latched_box_opp[i]:
+            return "box_violation_opp"
+        return "timeout"
+
+    def _on_step(self) -> bool:
+        infos: list[dict[str, Any]] = self.locals.get("infos", [])
+        self._ensure_capacity(len(infos))
+        for i, info in enumerate(infos):
+            if info.get("scored_for_us", False):
+                self._latched_for[i] = True
+            if info.get("scored_against_us", False):
+                self._latched_against[i] = True
+            if info.get("box_violation_self", False):
+                self._latched_box_self[i] = True
+            if info.get("box_violation_opp", False):
+                self._latched_box_opp[i] = True
+            if "episode" in info:
+                outcome = self._classify(i)
+                for name in self._OUTCOMES:
+                    self._counts[name].append(1.0 if name == outcome else 0.0)
+                self._latched_for[i] = False
+                self._latched_against[i] = False
+                self._latched_box_self[i] = False
+                self._latched_box_opp[i] = False
+        return True
+
+    def _on_rollout_end(self) -> None:
+        any_window = self._counts["scored_for_us"]
+        if not any_window:
+            return
+        n = len(any_window)
+        for name in self._OUTCOMES:
+            rate = sum(self._counts[name]) / n
+            self.logger.record(f"outcomes/{name}_rate", rate)
+        self.logger.record("outcomes/window_episodes", n)
+
+
+class LifetimeStepsCallback(BaseCallback):
+    """Logs cumulative env-step counts that span across resume boundaries.
+
+    Used in tandem with `--reset-step-counter`, where the run's own
+    `time/total_timesteps` chart restarts at 0 (so the new run gets its
+    own clean TB scalars) but we still want a "lifetime" view that
+    includes any pretraining steps. Records on rollout end so it lands
+    in the same dump as SB3's built-in `time/total_timesteps`."""
+
+    def __init__(self, pretrain_offset: int) -> None:
+        super().__init__()
+        self.pretrain_offset = int(pretrain_offset)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self.logger.record("time/pretrain_steps", self.pretrain_offset)
+        self.logger.record(
+            "time/lifetime_steps", self.pretrain_offset + self.num_timesteps
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +542,22 @@ def main() -> None:
         "that target). Pass --run-name matching the original so checkpoints "
         "and gifs land in the same directories.",
     )
+    parser.add_argument(
+        "--reset-step-counter",
+        action="store_true",
+        help="Only valid with --resume. Reset the model's env-step counter "
+        "to 0 so the new run's TensorBoard scalars start fresh (SB3 also "
+        "auto-suffixes the TB log dir with _2/_3/... so the chart is "
+        "decoupled from the prior run). --total-timesteps is then "
+        "interpreted as the budget for THIS run only, not an absolute "
+        "target. The pretraining step count is preserved as an offset "
+        "and logged each rollout as time/lifetime_steps so a 'total "
+        "samples seen' view is still available.",
+    )
     args = parser.parse_args()
+
+    if args.reset_step_counter and args.resume is None:
+        parser.error("--reset-step-counter requires --resume.")
 
     # Load + validate the YAML config up-front so any schema errors
     # surface immediately, before we set up output dirs / spawn workers.
@@ -420,13 +622,22 @@ def main() -> None:
             verbose=1,
         )
         loaded_steps = int(model.num_timesteps)
-        remaining_steps = max(0, args.total_timesteps - loaded_steps)
-        if remaining_steps == 0:
-            print(
-                f"[train] resume target {args.total_timesteps:,} already reached "
-                f"(checkpoint at {loaded_steps:,}). Nothing to do."
-            )
-            return
+        if args.reset_step_counter:
+            # Pretrain offset preserved for lifetime logging only; the
+            # model counter restarts at 0 once learn() is called with
+            # reset_num_timesteps=True. --total-timesteps is the budget
+            # for THIS run, not an absolute lifetime target.
+            pretrain_offset = loaded_steps
+            remaining_steps = args.total_timesteps
+        else:
+            pretrain_offset = 0
+            remaining_steps = max(0, args.total_timesteps - loaded_steps)
+            if remaining_steps == 0:
+                print(
+                    f"[train] resume target {args.total_timesteps:,} already reached "
+                    f"(checkpoint at {loaded_steps:,}). Nothing to do."
+                )
+                return
     else:
         policy_kwargs: dict[str, Any] = dict(
             net_arch=dict(pi=[128, 128], vf=[128, 128]),
@@ -440,8 +651,10 @@ def main() -> None:
             n_steps=args.n_steps,
             batch_size=args.batch_size,
             n_epochs=10,
-            gamma=0.99,
-            gae_lambda=0.95,
+            # gamma=0.99,
+            # gae_lambda=0.95,
+            gamma=0.98,
+            gae_lambda=0.92,
             clip_range=0.2,
             ent_coef=args.ent_coef,
             # Force CPU. At our network size (128×128 MLP, 18-d obs)
@@ -457,6 +670,7 @@ def main() -> None:
         )
         loaded_steps = 0
         remaining_steps = args.total_timesteps
+        pretrain_offset = 0
 
     # Callbacks
     # CheckpointCallback's save_freq is per-env, so divide the desired total-
@@ -471,6 +685,10 @@ def main() -> None:
     ]
     if not args.disable_reward_breakdown:
         callbacks.append(RewardBreakdownCallback())
+    callbacks.append(GoalRateCallback(window=100))
+    callbacks.append(EpisodeOutcomeCallback(window=100))
+    if args.reset_step_counter:
+        callbacks.append(LifetimeStepsCallback(pretrain_offset=pretrain_offset))
     if args.render_every is not None:
         gif_dir = output_dir / "gifs"
         rows, cols = args.render_grid
@@ -478,7 +696,9 @@ def main() -> None:
             GifEvalCallback(
                 eval_env_factory=lambda: make_l1_env(
                     seed=args.render_eval_seed,
-                    rewards=[type(r)(**_term_kwargs(r, config)) for r in config.rewards],
+                    rewards=[
+                        type(r)(**_term_kwargs(r, config)) for r in config.rewards
+                    ],
                     env_kwargs=config.env_kwargs,
                 ),
                 render_every=args.render_every,
@@ -497,10 +717,20 @@ def main() -> None:
     if args.resume is not None:
         print(f"[train] resume from   : {args.resume}")
         print(f"[train] resumed at    : {loaded_steps:,} env steps")
-        print(
-            f"[train] remaining     : {remaining_steps:,} steps "
-            f"to reach target {args.total_timesteps:,}"
-        )
+        if args.reset_step_counter:
+            print(
+                f"[train] step counter  : RESET (TB log dir auto-suffixed; "
+                f"pretrain offset {pretrain_offset:,} logged as time/lifetime_steps)"
+            )
+            print(
+                f"[train] this run      : {remaining_steps:,} steps "
+                f"(lifetime target ≈ {pretrain_offset + remaining_steps:,})"
+            )
+        else:
+            print(
+                f"[train] remaining     : {remaining_steps:,} steps "
+                f"to reach target {args.total_timesteps:,}"
+            )
     else:
         print(f"[train] total timesteps: {args.total_timesteps:,}")
     print(
@@ -532,12 +762,14 @@ def main() -> None:
         # rollout, which matches the non-resume behaviour. Pinning
         # here makes the cadence unambiguous.
         log_interval=1,
-        # On resume: keep the model's existing num_timesteps counter so
-        # checkpoint filenames continue from where they left off (e.g.
-        # ppo_13000000_steps.zip after resuming at 12M) and the
-        # TensorBoard run picks up its existing log dir instead of
-        # starting a fresh `_2` subdir.
-        reset_num_timesteps=(args.resume is None),
+        # On resume: by default keep the model's existing num_timesteps
+        # counter so checkpoint filenames continue from where they left
+        # off (e.g. ppo_13000000_steps.zip after resuming at 12M) and
+        # the TensorBoard run picks up its existing log dir instead of
+        # starting a fresh `_2` subdir. With --reset-step-counter the
+        # counter restarts at 0, SB3 auto-suffixes the TB log dir, and
+        # the LifetimeStepsCallback records the pretraining offset.
+        reset_num_timesteps=(args.resume is None or args.reset_step_counter),
     )
 
     final_path = output_dir / "final.zip"

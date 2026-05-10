@@ -71,9 +71,14 @@ atan2. With robot forward = (cos θ, sin θ) and ball-direction unit
 vector = ((bx-rx)/d, (by-ry)/d), the dot product is exactly cos(Δθ).
 Skipping atan2 avoids a transcendental in the inner reward loop.
 
-Use with a POSITIVE weight (e.g. weight=+0.3). The peak per-step
-contribution is `weight * 1.0` at the band midpoint with full FRONT
-alignment, well below the magnitude of BallProgressReward in active
+**Sign convention**: use a POSITIVE weight (e.g. `weight=+0.3`). The
+term returns an UNSIGNED magnitude in [0, 1] but represents a *desired*
+behaviour (face the ball) — so positive weight is what makes the
+agent seek alignment. Negative weight would actively reward
+mis-alignment.
+
+The peak per-step contribution is `weight * 1.0` at the band midpoint
+with full FRONT alignment, well below the magnitude of BallProgressReward in active
 pushing scenarios.
 """
 
@@ -84,6 +89,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class BallAlignmentReward(RewardTerm):
     name = "ball_alignment"
+    expected_weight_sign = +1
 
     def __init__(
         self,

@@ -30,6 +30,11 @@ This term simply forwards that fraction. With a NEGATIVE weight `-k`, a
 robot fully pinned for one second of sim time accumulates a penalty of
 `k` (since 1 s × 1.0-frac = 1 unit of "contact-seconds").
 
+**Sign convention**: use a NEGATIVE weight (e.g. `weight=-0.5`). The
+term returns an UNSIGNED magnitude in [0, 1]; positive weight would
+actively reward wall-pinning, which is the opposite of what's
+intended.
+
 Richer variants worth building once we have data
 ------------------------------------------------
 The env also exposes `info["robot_contacts"]`, a flat list of every
@@ -57,6 +62,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class ObstacleContactPenalty(RewardTerm):
     name = "obstacle_contact"
+    expected_weight_sign = -1
 
     def __call__(self, ctx: RewardContext) -> float:
         return float(ctx.info.get("obstacle_contact_frac", 0.0))

@@ -5,7 +5,7 @@
 # Schema: see `AtomGym/training/config.py`.
 
 env:
-  max_episode_steps: 200
+  max_episode_steps: 100
   # GAME RULE: opposing goalie-box geometry + per-visit time budget.
   # `goalie_box_terminal_time = 0` disables the rule (legacy behaviour
   # preserved). Set to a positive value (e.g. 3.0) to enforce a
@@ -25,15 +25,15 @@ rewards:
   ball_progress:
     weight: 5.0
   distance_to_ball:
-    weight: -0.1
-  goal_scored:
-    weight: 100.0
+    weight: -0.25
+  # goal_scored:
+  #   weight: 100.0
   stall_penalty:
     weight: -0.005
-  obstacle_contact:
-    weight: -0.1
+  # obstacle_contact:
+  #   weight: -0.1
   ball_alignment:
-    weight: 0.075
+    weight: 0.5
     # inner_radius / outer_radius / back_weight: class defaults
     # (0.0 / 0.18 / 0.3 — see ball_alignment.py).
 
@@ -55,16 +55,17 @@ rewards:
   # vs goal_scored=+10 ⟹ violation costs ~1.7× a goal. See the
   # "Calibration" section in goalie_box_penalty.py docstring for the
   # full reasoning + how to tune.
-  goalie_box:
-    weight: -0.5
-    trigger_time: 1.2            # seconds after entry before the ramp activates
-    power: 1.0                   # polynomial steepness of the ramp
-    termination_penalty: 10.0    # sparse cost on violation, in `weight` units
-    depth_saturation: 0.06       # depth (m) at which the raw depth factor hits 1
-    # Linear blend toward "uniform inside box": effective_depth_factor
-    # = (1 − depth_floor) × raw + depth_floor. 0 = pure depth-graduated
-    # potential field (boundary contributes 0). 1 = uniform per-step
-    # penalty across the box interior. 0.5 ⟹ boundary at 50% of
-    # centroid magnitude — meaningful warning even at the edge while
-    # keeping a mild outward gradient.
-    depth_floor: 0.5
+
+  # goalie_box:
+  #   weight: -0.5
+  #   trigger_time: 1.2            # seconds after entry before the ramp activates
+  #   power: 1.0                   # polynomial steepness of the ramp
+  #   termination_penalty: 10.0    # sparse cost on violation, in `weight` units
+  #   depth_saturation: 0.06       # depth (m) at which the raw depth factor hits 1
+  #   # Linear blend toward "uniform inside box": effective_depth_factor
+  #   # = (1 − depth_floor) × raw + depth_floor. 0 = pure depth-graduated
+  #   # potential field (boundary contributes 0). 1 = uniform per-step
+  #   # penalty across the box interior. 0.5 ⟹ boundary at 50% of
+  #   # centroid magnitude — meaningful warning even at the edge while
+  #   # keeping a mild outward gradient.
+  #   depth_floor: 0.5

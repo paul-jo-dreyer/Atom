@@ -72,9 +72,7 @@ def _make_ctx(
     )
 
 
-def _eval(
-    term: GoalieBoxPenalty, **ctx_kwargs
-) -> float:
+def _eval(term: GoalieBoxPenalty, **ctx_kwargs) -> float:
     """Returned value is unsigned magnitude (term returns >= 0)."""
     return term(_make_ctx(**ctx_kwargs)) * term.weight * (-1.0)
     # Negate because production weight is negative (penalty); rendered
@@ -87,49 +85,83 @@ def _probe(
     field_y_half: float,
 ) -> None:
     print("\nSanity probe — penalty at canonical poses (positive = penalty magnitude):")
-    print(f"  weight={term.weight}, terminal={term.terminal_time}s, "
-          f"trigger={term.trigger_time}s, power={term.power}")
+    print(
+        f"  weight={term.weight}, terminal={term.terminal_time}s, "
+        f"trigger={term.trigger_time}s, power={term.power}"
+    )
 
     near_terminal = 0.95
     poses = [
-        ("at inner edge (just inside)",
-         field_x_half - term.goalie_box_depth + 0.001, 0.0),
-        ("centroid (cx, 0)",
-         field_x_half - 0.5 * term.goalie_box_depth, 0.0),
-        ("deep inside (1 robot from edge)",
-         field_x_half - term.goalie_box_depth + term.depth_saturation, 0.0),
-        ("just outside box",
-         field_x_half - term.goalie_box_depth - 0.005, 0.0),
+        (
+            "at inner edge (just inside)",
+            field_x_half - term.goalie_box_depth + 0.001,
+            0.0,
+        ),
+        ("centroid (cx, 0)", field_x_half - 0.5 * term.goalie_box_depth, 0.0),
+        (
+            "deep inside (1 robot from edge)",
+            field_x_half - term.goalie_box_depth + term.depth_saturation,
+            0.0,
+        ),
+        ("just outside box", field_x_half - term.goalie_box_depth - 0.005, 0.0),
     ]
     print(f"  at time_in_box_norm = {near_terminal}:")
     for name, rx, ry in poses:
-        v = term(_make_ctx(
-            rx=rx, ry=ry, time_in_box_norm=near_terminal,
-            field_x_half=field_x_half, field_y_half=field_y_half,
-        ))
+        v = term(
+            _make_ctx(
+                rx=rx,
+                ry=ry,
+                time_in_box_norm=near_terminal,
+                field_x_half=field_x_half,
+                field_y_half=field_y_half,
+            )
+        )
         print(f"    {name:42s} → {v:.4f}")
     # And at the terminal (with violation flag)
     print(f"  at violation (time=1.0, info[box_violation_self]=True), centroid:")
-    v_term = term(_make_ctx(
-        rx=field_x_half - 0.5 * term.goalie_box_depth, ry=0.0,
-        time_in_box_norm=1.0, field_x_half=field_x_half, field_y_half=field_y_half,
-        info={"box_violation_self": True},
-    ))
-    print(f"    centroid + sparse → {v_term:.4f}  (≈ 1.0 ramp + {term.termination_penalty} sparse)")
+    v_term = term(
+        _make_ctx(
+            rx=field_x_half - 0.5 * term.goalie_box_depth,
+            ry=0.0,
+            time_in_box_norm=1.0,
+            field_x_half=field_x_half,
+            field_y_half=field_y_half,
+            info={"box_violation_self": True},
+        )
+    )
+    print(
+        f"    centroid + sparse → {v_term:.4f}  (≈ 1.0 ramp + {term.termination_penalty} sparse)"
+    )
 
 
-def _plot_time_ramp(ax: plt.Axes, term: GoalieBoxPenalty, fxh: float, fyh: float) -> None:
+def _plot_time_ramp(
+    ax: plt.Axes, term: GoalieBoxPenalty, fxh: float, fyh: float
+) -> None:
     ts = np.linspace(0.0, 1.0, 200)
     cx = fxh - 0.5 * term.goalie_box_depth
     vals = [
-        term(_make_ctx(rx=cx, ry=0.0, time_in_box_norm=t, field_x_half=fxh, field_y_half=fyh))
+        term(
+            _make_ctx(
+                rx=cx, ry=0.0, time_in_box_norm=t, field_x_half=fxh, field_y_half=fyh
+            )
+        )
         for t in ts
     ]
     ax.plot(ts * term.terminal_time, vals, linewidth=2.0)
-    ax.axvline(term.trigger_time, color="cyan", linestyle="--", linewidth=1.2,
-               label=f"trigger ({term.trigger_time}s)")
-    ax.axvline(term.terminal_time, color="magenta", linestyle="--", linewidth=1.2,
-               label=f"terminal ({term.terminal_time}s)")
+    ax.axvline(
+        term.trigger_time,
+        color="cyan",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"trigger ({term.trigger_time}s)",
+    )
+    ax.axvline(
+        term.terminal_time,
+        color="magenta",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"terminal ({term.terminal_time}s)",
+    )
     ax.set_xlabel("time in opposing box (s)")
     ax.set_ylabel("penalty (unsigned)")
     ax.set_title(f"Time ramp at centroid (power={term.power})")
@@ -153,32 +185,43 @@ def _plot_spatial(
         for i, x in enumerate(xs):
             grid[j, i] = term(
                 _make_ctx(
-                    rx=float(x), ry=float(y), time_in_box_norm=t_norm,
-                    field_x_half=fxh, field_y_half=fyh,
+                    rx=float(x),
+                    ry=float(y),
+                    time_in_box_norm=t_norm,
+                    field_x_half=fxh,
+                    field_y_half=fyh,
                 )
             )
     im = ax.imshow(
-        grid, origin="lower",
+        grid,
+        origin="lower",
         extent=(x_lo, x_hi, y_lo, y_hi),
-        cmap="hot", vmin=0.0, vmax=1.0, aspect="equal",
+        cmap="jet",
+        vmin=0.0,
+        vmax=1.0,
+        aspect="equal",
         interpolation="nearest",
     )
     cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("penalty (unsigned)", rotation=270, labelpad=12)
     # Box outline.
-    ax.add_patch(Rectangle(
-        (fxh - term.goalie_box_depth, -term.goalie_box_y_half),
-        term.goalie_box_depth, 2 * term.goalie_box_y_half,
-        fill=False, edgecolor="cyan", linewidth=1.5, linestyle="--",
-    ))
+    ax.add_patch(
+        Rectangle(
+            (fxh - term.goalie_box_depth, -term.goalie_box_y_half),
+            term.goalie_box_depth,
+            2 * term.goalie_box_y_half,
+            fill=False,
+            edgecolor="cyan",
+            linewidth=1.5,
+            linestyle="--",
+        )
+    )
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_title(f"Spatial @ t={t_norm:.2f}·terminal")
 
 
-def _plot_joint(
-    ax: plt.Axes, term: GoalieBoxPenalty, fxh: float, fyh: float
-) -> None:
+def _plot_joint(ax: plt.Axes, term: GoalieBoxPenalty, fxh: float, fyh: float) -> None:
     """Heatmap of penalty over (intrusion_x, time_in_box_norm) at y=0."""
     intrusions = np.linspace(0.0, term.goalie_box_depth, 80)
     ts = np.linspace(0.0, 1.0, 80)
@@ -188,23 +231,40 @@ def _plot_joint(
             rx = fxh - term.goalie_box_depth + float(d)
             grid[j, i] = term(
                 _make_ctx(
-                    rx=rx, ry=0.0, time_in_box_norm=float(t),
-                    field_x_half=fxh, field_y_half=fyh,
+                    rx=rx,
+                    ry=0.0,
+                    time_in_box_norm=float(t),
+                    field_x_half=fxh,
+                    field_y_half=fyh,
                 )
             )
     im = ax.imshow(
-        grid, origin="lower",
+        grid,
+        origin="lower",
         extent=(intrusions[0] * 1000, intrusions[-1] * 1000, ts[0], ts[-1]),
-        cmap="hot", vmin=0.0, vmax=1.0, aspect="auto",
+        cmap="jet",
+        vmin=0.0,
+        vmax=1.0,
+        aspect="auto",
         interpolation="nearest",
     )
     cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("penalty (unsigned)", rotation=270, labelpad=12)
     # Trigger / depth saturation lines.
-    ax.axhline(term.trigger_time / term.terminal_time, color="cyan",
-               linestyle="--", linewidth=1.2, label="trigger")
-    ax.axvline(term.depth_saturation * 1000, color="lime",
-               linestyle=":", linewidth=1.2, label=f"depth sat ({term.depth_saturation*1000:.0f}mm)")
+    ax.axhline(
+        term.trigger_time / term.terminal_time,
+        color="cyan",
+        linestyle="--",
+        linewidth=1.2,
+        label="trigger",
+    )
+    ax.axvline(
+        term.depth_saturation * 1000,
+        color="lime",
+        linestyle=":",
+        linewidth=1.2,
+        label=f"depth sat ({term.depth_saturation * 1000:.0f}mm)",
+    )
     ax.set_xlabel("intrusion (mm)")
     ax.set_ylabel("time_in_box / terminal")
     ax.set_title("Joint depth × time")
@@ -216,11 +276,21 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--weight", type=float, default=1.0)
     p.add_argument("--trigger-time", type=float, default=2.0)
     p.add_argument("--terminal-time", type=float, default=3.0)
-    p.add_argument("--power", type=float, default=3.0)
+    p.add_argument("--power", type=float, default=2.0)
     p.add_argument("--termination-penalty", type=float, default=1.0)
     p.add_argument("--goalie-box-depth", type=float, default=0.12)
     p.add_argument("--goalie-box-y-half", type=float, default=0.10)
+    p.add_argument("--goalie-box-corner-radius", type=float, default=0.0)
     p.add_argument("--depth-saturation", type=float, default=0.06)
+    p.add_argument(
+        "--depth-floor",
+        type=float,
+        default=0.0,
+        help="Linear-blend floor on the effective depth factor in [0, 1]. "
+        "0 = pure depth-graduated potential field (boundary contributes 0). "
+        "1 = uniform per-step penalty across the box interior. 0.5 ⟹ "
+        "boundary at 50%% of centroid magnitude.",
+    )
     p.add_argument("--field-x-half", type=float, default=0.375)
     p.add_argument("--field-y-half", type=float, default=0.225)
     p.add_argument(
@@ -242,7 +312,9 @@ def main() -> None:
         termination_penalty=args.termination_penalty,
         goalie_box_depth=args.goalie_box_depth,
         goalie_box_y_half=args.goalie_box_y_half,
+        goalie_box_corner_radius=args.goalie_box_corner_radius,
         depth_saturation=args.depth_saturation,
+        depth_floor=args.depth_floor,
     )
 
     print("Building GoalieBoxPenalty:")
@@ -251,9 +323,10 @@ def main() -> None:
     print(f"  terminal_time      : {term.terminal_time} s")
     print(f"  power              : {term.power}")
     print(f"  termination_penalty: {term.termination_penalty}")
-    print(f"  goalie_box_depth   : {term.goalie_box_depth*1000:.0f} mm")
-    print(f"  goalie_box_y_half  : {term.goalie_box_y_half*1000:.0f} mm")
-    print(f"  depth_saturation   : {term.depth_saturation*1000:.0f} mm")
+    print(f"  depth_floor        : {term.depth_floor}")
+    print(f"  goalie_box_depth   : {term.goalie_box_depth * 1000:.0f} mm")
+    print(f"  goalie_box_y_half  : {term.goalie_box_y_half * 1000:.0f} mm")
+    print(f"  depth_saturation   : {term.depth_saturation * 1000:.0f} mm")
 
     _probe(term, args.field_x_half, args.field_y_half)
 
@@ -270,6 +343,7 @@ def main() -> None:
 
     out_path = args.out
     from pathlib import Path
+
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, dpi=150)
     print(f"\nSaved heatmap → {out_path}")

@@ -50,7 +50,46 @@ The sign convention is "positive value, negative weight": this term
 returns the unsigned magnitude; the composite multiplies by `weight`
 which should be NEGATIVE to deliver a penalty.
 
-Use with a NEGATIVE weight (e.g. `weight=-20.0`).
+**Sign convention**: use a NEGATIVE weight (e.g. `weight=-0.5`). The
+term returns an UNSIGNED magnitude (ramp + sparse cost ≥ 0); the
+negative weight turns "violation" into a penalty. Positive weight
+would actively reward lingering in the box.
+
+Calibration (how to pick `weight` + `termination_penalty`)
+----------------------------------------------------------
+The policy sees the goalie-box rule as a sum of two costs per episode:
+
+ 1. **Integrated ramp** — the polynomial fires at every control step
+    inside the warning zone, scaled by depth. Worst case (robot stays
+    deep through the entire warning window): the integral collapses to
+
+        integrated_ramp ≈ weight * n_steps / (power + 1)
+
+    where `n_steps = (terminal_time - trigger_time) / control_dt`.
+    Example: weight=-0.5, power=3, warning=1.8s, control_dt=1/30s
+    ⟹ `n_steps = 54`, integrated_ramp ≈ -0.5 * 54 / 4 ≈ -6.8.
+
+ 2. **Sparse violation cost** — fires once on the terminal step:
+
+        sparse = weight * termination_penalty
+
+    Example: weight=-0.5, termination_penalty=20.0 ⟹ sparse = -10.
+
+The total worst-case violation cost is `integrated_ramp + sparse`.
+
+**Calibration rule of thumb**: pick `weight` + `termination_penalty`
+so the total worst-case violation cost is **1-3× the magnitude of
+GoalScoredReward.weight** in absolute terms. Less than 1× and the
+policy may decide "loiter, score, exit" is worth it. More than 5-10×
+and the policy treats the warning zone as a death region and avoids
+the box even when scoring would require briefly entering — over-
+correction.
+
+The PPO TensorBoard breakdown (`reward/goalie_box` vs
+`reward/goal_scored`) is the diagnostic: if the per-episode means
+have a healthy ratio (the cost-of-violation episodes shouldn't
+dwarf the reward-of-scoring episodes by orders of magnitude), the
+calibration is balanced.
 """
 
 from __future__ import annotations
@@ -60,6 +99,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class GoalieBoxPenalty(RewardTerm):
     name = "goalie_box"
+    expected_weight_sign = -1
 
     def __init__(
         self,
@@ -71,7 +111,9 @@ class GoalieBoxPenalty(RewardTerm):
         termination_penalty: float = 1.0,
         goalie_box_depth: float = 0.12,
         goalie_box_y_half: float = 0.10,
+        goalie_box_corner_radius: float = 0.0,
         depth_saturation: float = 0.06,
+        depth_floor: float = 0.0,
     ) -> None:
         """
         Parameters
@@ -105,9 +147,12 @@ class GoalieBoxPenalty(RewardTerm):
             integrated. With `weight=-goal_reward` this makes a
             box-violation termination strictly worse than a goal scored.
         goalie_box_depth, goalie_box_y_half
-            Geometry of the goalie box (matches `StaticFieldPenalty` and
-            env defaults). Used to compute the depth factor for the
-            ramp.
+            Geometry of the goalie box (inherited from env at config-
+            load time — see `_REWARD_INHERITS_FROM_ENV` in
+            `training/config.py`). Used to compute the depth factor.
+        goalie_box_corner_radius
+            Radius of the rounded interior corners. Inherited from
+            env. Default 0 ⟹ legacy sharp-cornered rectangle.
         depth_saturation
             Distance from the nearest field-facing box edge at which the
             depth factor saturates to 1. Default 0.06 m ≈ one robot
@@ -115,6 +160,19 @@ class GoalieBoxPenalty(RewardTerm):
             ramp pays full magnitude regardless of how much deeper the
             robot goes. Smaller values make the spatial gradient steeper
             near the boundary.
+        depth_floor
+            Minimum effective depth factor regardless of position
+            inside the box, in [0, 1]. Linearly blends the raw
+            depth factor toward 1: `effective = (1−α)·raw + α` where
+            α = `depth_floor`. Default 0.0 ⟹ pure depth-graduated
+            potential field (legacy: boundary penalty = 0). Set > 0
+            to ensure the warning ramp pays meaningful penalty even at
+            the box boundary as time approaches terminal — useful when
+            you want time-pressure to dominate position. The peak
+            per-step penalty (at the centroid / depth-saturated
+            interior) is unchanged at `weight × u^p`. Worst-case
+            calibration math is therefore unaffected; only the
+            best-case (boundary-loitering) integrated cost rises.
         """
         super().__init__(weight=weight)
         if trigger_time < 0.0:
@@ -135,15 +193,25 @@ class GoalieBoxPenalty(RewardTerm):
                 f"goalie box dims must be > 0, got "
                 f"depth={goalie_box_depth}, y_half={goalie_box_y_half}"
             )
+        if goalie_box_corner_radius < 0.0:
+            raise ValueError(
+                f"goalie_box_corner_radius must be >= 0, got {goalie_box_corner_radius}"
+            )
         if depth_saturation <= 0.0:
             raise ValueError(f"depth_saturation must be > 0, got {depth_saturation}")
+        if not 0.0 <= depth_floor <= 1.0:
+            raise ValueError(
+                f"depth_floor must be in [0, 1], got {depth_floor}"
+            )
         self.trigger_time = float(trigger_time)
         self.terminal_time = float(terminal_time)
         self.power = float(power)
         self.termination_penalty = float(termination_penalty)
         self.goalie_box_depth = float(goalie_box_depth)
         self.goalie_box_y_half = float(goalie_box_y_half)
+        self.goalie_box_corner_radius = float(goalie_box_corner_radius)
         self.depth_saturation = float(depth_saturation)
+        self.depth_floor = float(depth_floor)
 
         # Pre-compute fixed quantities used in __call__.
         self._trigger_norm = self.trigger_time / self.terminal_time
@@ -187,26 +255,32 @@ class GoalieBoxPenalty(RewardTerm):
     def _depth_factor_at(
         self, rx: float, ry: float, field_x_half: float
     ) -> float:
-        """Normalised depth into the opposing (+x) goalie box, in [0, 1].
+        """Effective depth factor in [depth_floor, 1] inside the box,
+        0 outside.
 
-        The opposing box is a rectangle adjacent to the +x goal:
-            x ∈ [field_x_half - depth, field_x_half]
-            y ∈ [-y_half, +y_half]
+        Geometry: rounded-rect SDF from `AtomGym.goalie_box_geometry`
+        (shared with env, so box-entry test and depth shaping agree).
 
-        Three of its four edges face the field interior (the fourth abuts
-        the goal mouth — there's no "exit" through it). Depth = min
-        distance to any of those three field-facing edges, normalised by
-        `min(box_depth, box_y_half)` (the smallest "outward" distance
-        from the deepest point in the box). Outside the box: 0."""
-        if abs(ry) > self.goalie_box_y_half:
+        Shaping: raw depth-saturated factor is `min(depth/sat, 1)` in
+        [0, 1]. Linearly blended toward 1 by `depth_floor`:
+
+            effective = (1 − depth_floor) · raw + depth_floor
+
+        depth_floor=0 recovers the legacy potential-field (boundary
+        contributes 0). depth_floor=1 makes the per-step penalty
+        uniform across the box interior. Outside the box the term
+        always returns 0 — the boundary cliff is preserved at all
+        depth_floor values."""
+        from AtomGym.goalie_box_geometry import signed_depth_into_box
+        depth = signed_depth_into_box(
+            rx, ry,
+            field_x_half=field_x_half,
+            goalie_box_depth=self.goalie_box_depth,
+            goalie_box_y_half=self.goalie_box_y_half,
+            goalie_box_corner_radius=self.goalie_box_corner_radius,
+            side=+1,
+        )
+        if depth <= 0.0:
             return 0.0
-        box_inner_x = field_x_half - self.goalie_box_depth
-        box_outer_x = field_x_half
-        if rx < box_inner_x or rx > box_outer_x:
-            return 0.0
-        # Three field-facing edges: x=box_inner_x, y=+y_half, y=-y_half.
-        d_left = rx - box_inner_x
-        d_top = self.goalie_box_y_half - ry
-        d_bottom = ry + self.goalie_box_y_half
-        depth = min(d_left, d_top, d_bottom)
-        return max(0.0, min(1.0, depth / self.depth_saturation))
+        raw = min(depth / self.depth_saturation, 1.0)
+        return (1.0 - self.depth_floor) * raw + self.depth_floor

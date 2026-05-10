@@ -118,6 +118,7 @@ class AtomTeamEnv(gym.Env):
         manipulator: str | None = None,
         goalie_box_depth: float = 0.12,
         goalie_box_y_half: float = 0.10,
+        goalie_box_corner_radius: float = 0.0,
         goalie_box_terminal_time: float = 0.0,
     ) -> None:
         """See `AtomSoloEnv` for parameter documentation. The
@@ -151,8 +152,13 @@ class AtomTeamEnv(gym.Env):
                 f"goalie_box_terminal_time must be >= 0 (0 = rule disabled), "
                 f"got {goalie_box_terminal_time}"
             )
+        if goalie_box_corner_radius < 0.0:
+            raise ValueError(
+                f"goalie_box_corner_radius must be >= 0, got {goalie_box_corner_radius}"
+            )
         self.goalie_box_depth = float(goalie_box_depth)
         self.goalie_box_y_half = float(goalie_box_y_half)
+        self.goalie_box_corner_radius = float(goalie_box_corner_radius)
         self.goalie_box_terminal_time = float(goalie_box_terminal_time)
 
         self.reward_terms: list[RewardTerm] = (
@@ -524,17 +530,29 @@ class AtomTeamEnv(gym.Env):
     def _is_in_opp_goalie_box(
         self, x: float, y: float, attacker_side: str
     ) -> bool:
-        """Test whether a world-frame point falls inside the goalie box on
-        the side the attacker is attacking. `attacker_side="+x"` ⟹ box is
-        at +x (learner). `attacker_side="-x"` ⟹ box at -x (opponent)."""
-        if abs(y) > self.goalie_box_y_half:
-            return False
+        """Test whether a world-frame point falls inside the opposing
+        goalie box (the one the attacker is attacking). With
+        `goalie_box_corner_radius > 0`, the two field-facing corners
+        are rounded — geometry shared with `GoalieBoxPenalty` via
+        `AtomGym.goalie_box_geometry`.
+
+        `attacker_side="+x"` ⟹ box at +x (learner attacks here);
+        `attacker_side="-x"` ⟹ box at -x (opponent attacks here)."""
+        from AtomGym.goalie_box_geometry import is_in_opp_goalie_box
         if attacker_side == "+x":
-            return self.field_x_half - self.goalie_box_depth <= x <= self.field_x_half
+            side = +1
         elif attacker_side == "-x":
-            return -self.field_x_half <= x <= -self.field_x_half + self.goalie_box_depth
+            side = -1
         else:
             raise ValueError(f"attacker_side must be '+x' or '-x', got {attacker_side!r}")
+        return is_in_opp_goalie_box(
+            x, y,
+            field_x_half=self.field_x_half,
+            goalie_box_depth=self.goalie_box_depth,
+            goalie_box_y_half=self.goalie_box_y_half,
+            goalie_box_corner_radius=self.goalie_box_corner_radius,
+            side=side,
+        )
 
     def opponent_view(self, learner_obs: np.ndarray) -> np.ndarray:
         """Convert a learner-perspective obs into the opponent's canonical

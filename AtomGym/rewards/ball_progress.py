@@ -14,6 +14,10 @@ the nearest scorable point, not the literal mouth centre.
 
 Signed: positive when the ball moves toward the goal, negative when it
 moves away, zero when stationary or moving perpendicular. Units are m/s.
+
+**Sign convention**: use a POSITIVE weight (e.g. `weight=+1.0`). The
+term itself carries the sign (positive when good, negative when bad);
+the weight is just a magnitude scale.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from AtomGym.rewards._base_reward import RewardContext, RewardTerm
 
 class BallProgressReward(RewardTerm):
     name = "ball_progress"
+    expected_weight_sign = +1
 
     def __call__(self, ctx: RewardContext) -> float:
         # De-normalize ball obs back to metric units.
@@ -34,12 +39,17 @@ class BallProgressReward(RewardTerm):
 
         # Target: closest scorable point inside the +x goal mouth.
         target_x = ctx.field_x_half
-        if by > ctx.goal_y_half:
-            target_y = ctx.goal_y_half
-        elif by < -ctx.goal_y_half:
-            target_y = -ctx.goal_y_half
-        else:
-            target_y = by
+
+        # NOTE: Testing out making the target always the middle of the goal instead of nearest point
+
+        # if by > ctx.goal_y_half:
+        #     target_y = ctx.goal_y_half
+        # elif by < -ctx.goal_y_half:
+        #     target_y = -ctx.goal_y_half
+        # else:
+        #     target_y = by
+
+        target_y = 0.0
 
         dx = target_x - bx
         dy = target_y - by

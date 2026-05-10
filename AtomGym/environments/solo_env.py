@@ -157,6 +157,7 @@ class AtomSoloEnv(gym.Env):
         manipulator: str | None = None,
         goalie_box_depth: float = 0.12,
         goalie_box_y_half: float = 0.10,
+        goalie_box_corner_radius: float = 0.0,
         goalie_box_terminal_time: float = 0.0,
     ) -> None:
         """
@@ -176,6 +177,15 @@ class AtomSoloEnv(gym.Env):
             and `StaticFieldPenalty` defaults. The robot's "time-in-box"
             timer counts time spent in its OPPOSING box (i.e. the box it's
             attacking through).
+        goalie_box_corner_radius
+            Radius (m) of the rounded interior corners of the goalie
+            box. The two field-facing corners are replaced by tangent
+            quarter-circle arcs of this radius. Default 0 ⟹ legacy
+            sharp rectangle. The visual style YAML's
+            `markings.goalie_box_corner_radius_m` should be set to the
+            same value so the rendered marking matches the rule. The
+            shape is shared with `GoalieBoxPenalty` via
+            `AtomGym.goalie_box_geometry` — single source of truth.
         goalie_box_terminal_time
             Seconds the robot may be continuously in its opposing box
             before the episode is `terminated`. **Default 0** ⟹ rule is
@@ -211,8 +221,13 @@ class AtomSoloEnv(gym.Env):
                 f"goalie_box_terminal_time must be >= 0 (0 = rule disabled), "
                 f"got {goalie_box_terminal_time}"
             )
+        if goalie_box_corner_radius < 0.0:
+            raise ValueError(
+                f"goalie_box_corner_radius must be >= 0, got {goalie_box_corner_radius}"
+            )
         self.goalie_box_depth = float(goalie_box_depth)
         self.goalie_box_y_half = float(goalie_box_y_half)
+        self.goalie_box_corner_radius = float(goalie_box_corner_radius)
         self.goalie_box_terminal_time = float(goalie_box_terminal_time)
 
         # Reward terms applied each step. Public list — mutate freely
@@ -555,13 +570,17 @@ class AtomSoloEnv(gym.Env):
 
     def _is_in_opp_goalie_box(self, x: float, y: float) -> bool:
         """Test whether a world-frame point falls inside the +x (learner's
-        opposing) goalie box. Box spans x ∈ [field_x_half - depth,
-        field_x_half], y ∈ [-y_half, +y_half]. Inclusive on the field-
-        facing side; the goal-mouth-facing edge is the goal line itself."""
-        return (
-            x >= self.field_x_half - self.goalie_box_depth
-            and x <= self.field_x_half
-            and abs(y) <= self.goalie_box_y_half
+        opposing) goalie box. With `goalie_box_corner_radius > 0` the
+        two field-facing corners are rounded — geometry shared with
+        `GoalieBoxPenalty` via `AtomGym.goalie_box_geometry`."""
+        from AtomGym.goalie_box_geometry import is_in_opp_goalie_box
+        return is_in_opp_goalie_box(
+            x, y,
+            field_x_half=self.field_x_half,
+            goalie_box_depth=self.goalie_box_depth,
+            goalie_box_y_half=self.goalie_box_y_half,
+            goalie_box_corner_radius=self.goalie_box_corner_radius,
+            side=+1,
         )
 
     @staticmethod
