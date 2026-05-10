@@ -22,6 +22,10 @@ field:
   mowed_stripes_n: 12          # number of stripes across the turf
   mowed_stripes_delta: 14      # ±RGB shift between adjacent stripes
   mowed_stripes_axis: vertical # vertical | horizontal
+  # Per-side goal-chamber colours (frame + net). Blue defends the
+  # LEFT goal, orange defends the RIGHT. Set to null for plain white.
+  goal_color_left: "#3B82F6"   # blue body_color
+  goal_color_right: "#F97316"  # orange body_color
 
 # Cosmetic interior field markings — center circle, halfway line, and goalie
 # (penalty) boxes. Drawn purely on the visual layer, no physics interaction.
@@ -31,8 +35,15 @@ markings:
   line_width_px: 3
   center_circle_radius_m: 0.1     # ~scaled penalty arc / centre circle
   halfway_line: true               # vertical line through x = 0
-  goalie_box_depth_m: 0.12         # distance the box extends INTO the field
-  goalie_box_height_m: 0.2        # full vertical extent (top to bottom)
+  goalie_box_depth_m: 0.13         # distance the box extends INTO the field
+  goalie_box_height_m: 0.22        # full vertical extent (top to bottom)
+  goalie_box_corner_radius_m: 0.07 # radius of the rounded interior corners (0 = sharp)
+  # Per-side goalie-box colours — sourced from team palette below.
+  # Convention: blue defends the LEFT goal (-x), orange defends the
+  # RIGHT goal (+x). Set to null to use the default white markings.
+  box_color_left: "#3B82F6"        # blue body_color
+  box_color_right: "#F97316"       # orange body_color
+  box_fill_alpha: 65               # 0 = outline only; 40-80 = subtle team-tint fill
 
 # Default style for any robot whose `team` key is null or unknown.
 # Per-team overrides go under `teams:` below.

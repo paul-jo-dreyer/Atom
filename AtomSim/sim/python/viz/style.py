@@ -45,6 +45,12 @@ class FieldStyle:
     mowed_stripes_n: int = 12
     mowed_stripes_delta: int = 14  # ±RGB shift between adjacent stripes
     mowed_stripes_axis: Literal["vertical", "horizontal"] = "vertical"
+    # Per-side goal-chamber colours (frame + net). Each defaults to None
+    # ⟹ inherit `walls` (legacy white-on-both-sides). Set them to a
+    # team's body-colour hex string (typically copying from `teams:`
+    # below) to give each side a team identity at a glance.
+    goal_color_left: RGB | None = None
+    goal_color_right: RGB | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,21 @@ class FieldMarkings:
     halfway_line: bool = True
     goalie_box_depth_m: float = 0.06  # how far box extends into the field
     goalie_box_height_m: float = 0.18  # full vertical extent (top to bottom)
+    # Radius (m) of the rounded interior corners of the goalie box.
+    # The two interior corners of each box are replaced by quarter-arcs
+    # tangent to the adjoining straight segments. 0 ⟹ sharp corners
+    # (legacy behaviour). The radius is silently clamped to
+    # min(box_depth, box_height/2) so it can't exceed the box.
+    goalie_box_corner_radius_m: float = 0.0
+    # Per-side goalie-box colours. Default None ⟹ inherit `color`
+    # (legacy white-on-both-sides).
+    box_color_left: RGB | None = None
+    box_color_right: RGB | None = None
+    # Translucent fill of the box interior at this alpha (0-255).
+    # 0 ⟹ outline only (legacy). Higher values tint the box interior
+    # with `box_color_*`. ~40-80 gives a subtle "team territory" cue
+    # without overpowering the turf or robot graphics.
+    box_fill_alpha: int = 0
 
 
 @dataclass(frozen=True)
@@ -152,6 +173,8 @@ def load_style(path: str | Path) -> StyleConfig:
         mowed_stripes_n=int(f.get("mowed_stripes_n", 12)),
         mowed_stripes_delta=int(f.get("mowed_stripes_delta", 14)),
         mowed_stripes_axis=stripes_axis,
+        goal_color_left=_opt_color(f, "goal_color_left"),
+        goal_color_right=_opt_color(f, "goal_color_right"),
     )
 
     r = raw["robot"]
@@ -184,6 +207,10 @@ def load_style(path: str | Path) -> StyleConfig:
         halfway_line=bool(mk.get("halfway_line", True)),
         goalie_box_depth_m=float(mk.get("goalie_box_depth_m", 0.06)),
         goalie_box_height_m=float(mk.get("goalie_box_height_m", 0.18)),
+        goalie_box_corner_radius_m=float(mk.get("goalie_box_corner_radius_m", 0.0)),
+        box_color_left=_opt_color(mk, "box_color_left"),
+        box_color_right=_opt_color(mk, "box_color_right"),
+        box_fill_alpha=int(mk.get("box_fill_alpha", 0)),
     )
 
     teams: dict[str, TeamStyle] = {}

@@ -9,6 +9,7 @@ guaranteeing pixel-identical output between live and exported video.
 
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -161,65 +162,80 @@ class PygameSceneDrawer:
                 )
 
     def _draw_walls(self, surf: pygame.Surface, scene: SceneSpec) -> None:
-        """White perimeter + goal-chamber outlines. Drawn AFTER markings so
-        the wall lines sit on top of the centre circle and goalie boxes."""
+        """Field perimeter + goal-chamber outlines + nets. Drawn AFTER
+        markings so the wall lines sit on top of the centre circle and
+        goalie boxes.
+
+        The perimeter is always drawn in `field.walls`. Each goal
+        chamber (frame + net) can optionally override its colour via
+        `field.goal_color_left` / `_right` — typically copying a team
+        colour from `teams:` to give each side a visual identity."""
         xh, yh = scene.field.x_half, scene.field.y_half
         gh, gx = scene.field.goal_y_half, scene.field.goal_extension
-        color = self.style.field.walls
+        wall_color = self.style.field.walls
+        left_goal_color = self.style.field.goal_color_left or wall_color
+        right_goal_color = self.style.field.goal_color_right or wall_color
         boarder_width = self.style.field.walls_width_px
-        net_width = max(1, int(boarder_width * 0.5))
+        net_width = max(1, int(boarder_width * 0.75))
         has_goals = gh > 0.0 and gx > 0.0
 
         def line(
-            p1: tuple[float, float], p2: tuple[float, float], thickness: int
+            color: RGB,
+            p1: tuple[float, float],
+            p2: tuple[float, float],
+            thickness: int,
         ) -> None:
             pygame.draw.line(surf, color, self._w2s(*p1), self._w2s(*p2), thickness)
 
-        # Top + bottom walls (full-width).
-        line((-xh, yh), (xh, yh), boarder_width)
-        line((-xh, -yh), (xh, -yh), boarder_width)
+        # Top + bottom walls (full-width). Always white perimeter.
+        line(wall_color, (-xh, yh), (xh, yh), boarder_width)
+        line(wall_color, (-xh, -yh), (xh, -yh), boarder_width)
 
         if not has_goals:
-            line((-xh, -yh), (-xh, yh), boarder_width)
-            line((xh, -yh), (xh, yh), boarder_width)
+            line(wall_color, (-xh, -yh), (-xh, yh), boarder_width)
+            line(wall_color, (xh, -yh), (xh, yh), boarder_width)
             return
 
-        # Field walls split around the goal mouth.
-        line((-xh, -yh), (-xh, yh), boarder_width)
-        line((xh, -yh), (xh, yh), boarder_width)
+        # Field walls split around the goal mouth — perimeter colour.
+        line(wall_color, (-xh, -yh), (-xh, yh), boarder_width)
+        line(wall_color, (xh, -yh), (xh, yh), boarder_width)
 
-        # Left goal chamber — U opening to the right.
-        line((-xh - gx, gh), (-xh, gh), boarder_width)
-        line((-xh - gx, -gh), (-xh, -gh), boarder_width)
-        line((-xh - gx, -gh), (-xh - gx, gh), boarder_width)
-
-        # Right goal chamber — U opening to the left.
-        line((xh, gh), (xh + gx, gh), boarder_width)
-        line((xh, -gh), (xh + gx, -gh), boarder_width)
-        line((xh + gx, -gh), (xh + gx, gh), boarder_width)
-
-        # Left Net
+        # Left net.
         net_gap = 0.01
         x0 = -xh - gx
         x = x0
         while x < -xh:
             x = min(-xh, x + net_gap)
-            line((x, gh), (x, -gh), net_width)
+            line(wall_color, (x, gh), (x, -gh), net_width)
         y = gh
         while y > -gh:
             y = max(-gh, y - net_gap)
-            line((x0, y), (x0 + gx, y), net_width)
+            line(wall_color, (x0, y), (x0 + gx, y), net_width)
 
-        # right net
+        # Right net.
         x0 = xh + gx
         x = x0
         while x > xh:
             x = max(xh, x - net_gap)
-            line((x, gh), (x, -gh), net_width)
+            line(wall_color, (x, gh), (x, -gh), net_width)
         y = gh
         while y > -gh:
             y = max(-gh, y - net_gap)
-            line((x0, y), (x0 - gx, y), net_width)
+            line(wall_color, (x0, y), (x0 - gx, y), net_width)
+
+        # Left goal chamber — U opening to the right.
+        line(left_goal_color, (-xh - gx, gh), (-xh, gh), (int(boarder_width * 1.5)))
+        line(left_goal_color, (-xh - gx, -gh), (-xh, -gh), (int(boarder_width * 1.5)))
+        line(
+            left_goal_color, (-xh - gx, -gh), (-xh - gx, gh), (int(boarder_width * 1.5))
+        )
+
+        # Right goal chamber — U opening to the left.
+        line(right_goal_color, (xh, gh), (xh + gx, gh), (int(boarder_width * 1.5)))
+        line(right_goal_color, (xh, -gh), (xh + gx, -gh), (int(boarder_width * 1.5)))
+        line(
+            right_goal_color, (xh + gx, -gh), (xh + gx, gh), (int(boarder_width * 1.5))
+        )
 
     def _draw_markings(self, surf: pygame.Surface, scene: SceneSpec) -> None:
         """Cosmetic interior soccer-field lines: halfway line, centre circle,
@@ -246,27 +262,182 @@ class PygameSceneDrawer:
             pygame.draw.circle(surf, color, (cx, cy), r_px, width)
             pygame.draw.circle(surf, color, (cx, cy), r_px // 10, width * 5)
 
-        # Goalie boxes — open rectangles with the field-perimeter side absent.
+        # Goalie boxes — open "U" shape with the goal-line side absent.
+        # Two interior corners (where horizontal meets vertical) can be
+        # rounded via tangent quarter-arcs of radius
+        # `goalie_box_corner_radius_m`. r=0 ⟹ sharp legacy corners.
         bd = m.goalie_box_depth_m
         bh = 0.5 * m.goalie_box_height_m
         if bd > 0.0 and bh > 0.0:
-            # Left box (opens to the right): three sides.
-            p1 = self._w2s(-xh, bh)
-            p2 = self._w2s(-xh + bd, bh)
-            p3 = self._w2s(-xh + bd, -bh)
-            p4 = self._w2s(-xh, -bh)
-            pygame.draw.line(surf, color, p1, p2, width)
-            pygame.draw.line(surf, color, p2, p3, width)
-            pygame.draw.line(surf, color, p3, p4, width)
+            # Clamp the radius so the arcs always fit in the box. The
+            # interior vertical line needs 2r of vertical extent for the
+            # two arcs, so r ≤ bh; each horizontal stub needs r of x
+            # extent, so r ≤ bd.
+            r = max(0.0, min(m.goalie_box_corner_radius_m, bd, bh))
+            left_box_color = m.box_color_left or color
+            right_box_color = m.box_color_right or color
 
-            # Right box.
-            q1 = self._w2s(xh, bh)
-            q2 = self._w2s(xh - bd, bh)
-            q3 = self._w2s(xh - bd, -bh)
-            q4 = self._w2s(xh, -bh)
-            pygame.draw.line(surf, color, q1, q2, width)
-            pygame.draw.line(surf, color, q2, q3, width)
-            pygame.draw.line(surf, color, q3, q4, width)
+            # Fill (translucent) is drawn FIRST so the outline lands on
+            # top of it — the outline reads as the boundary of the
+            # filled region rather than a separate stroke.
+            if m.box_fill_alpha > 0:
+                self._draw_one_goalie_box_fill(
+                    surf,
+                    left_box_color,
+                    m.box_fill_alpha,
+                    side=-1,
+                    xh=xh,
+                    bd=bd,
+                    bh=bh,
+                    r=r,
+                )
+                self._draw_one_goalie_box_fill(
+                    surf,
+                    right_box_color,
+                    m.box_fill_alpha,
+                    side=+1,
+                    xh=xh,
+                    bd=bd,
+                    bh=bh,
+                    r=r,
+                )
+            self._draw_one_goalie_box(
+                surf, left_box_color, width, side=-1, xh=xh, bd=bd, bh=bh, r=r
+            )
+            self._draw_one_goalie_box(
+                surf, right_box_color, width, side=+1, xh=xh, bd=bd, bh=bh, r=r
+            )
+
+    def _draw_one_goalie_box(
+        self,
+        surf: pygame.Surface,
+        color: RGB,
+        width: int,
+        *,
+        side: int,
+        xh: float,
+        bd: float,
+        bh: float,
+        r: float,
+    ) -> None:
+        """Render the open-U marking outline for one goalie box.
+
+        side = +1 → right box (opens toward -x, against the +x wall)
+        side = -1 → left  box (opens toward +x, against the -x wall)
+
+        With r=0 this reduces to three straight segments (the legacy
+        sharp-cornered behaviour). With r>0 the two interior corners
+        become quarter-arcs tangent to the adjoining segments.
+
+        Implementation: build the entire U as a single polyline of
+        world-frame points (corners replaced by arc samples) and draw
+        it via pygame.draw.lines. Single rasteriser ⟹ consistent
+        thickness and clean joins where the arcs meet the straight
+        segments. Drawing line + arc separately produces 1-2 px gaps
+        because pygame's line/arc primitives round sub-pixel positions
+        differently."""
+        path = self._goalie_box_path(side=side, xh=xh, bd=bd, bh=bh, r=r)
+        screen_pts = [self._w2s(x, y) for x, y in path]
+        # `closed=False` ⟹ open polyline: the goal-line edge (the
+        # implicit closing segment from last point back to first) is
+        # NOT drawn — that's where the box opens onto the goal mouth.
+        pygame.draw.lines(surf, color, False, screen_pts, width)
+
+    def _draw_one_goalie_box_fill(
+        self,
+        surf: pygame.Surface,
+        color: RGB,
+        alpha: int,
+        *,
+        side: int,
+        xh: float,
+        bd: float,
+        bh: float,
+        r: float,
+    ) -> None:
+        """Translucent polygon fill of the goalie-box interior.
+
+        Same path geometry as the outline (so the boundary lines up
+        exactly), but rendered as a closed polygon with per-pixel
+        alpha. The implicit closing segment from the bottom goal-line
+        endpoint back to the top one becomes the goal-line side of the
+        fill — interior fully enclosed."""
+        path = self._goalie_box_path(side=side, xh=xh, bd=bd, bh=bh, r=r)
+        screen_pts = [self._w2s(x, y) for x, y in path]
+        # Per-pixel alpha requires a SRCALPHA-flagged surface. We draw
+        # onto a transparent overlay sized to the main surface, then
+        # blit it down. Cheap (one alloc per goalie box per frame —
+        # the fill is render-time, not policy-time, so this isn't on
+        # the hot path).
+        overlay = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        rgba = (color[0], color[1], color[2], int(alpha))
+        pygame.draw.polygon(overlay, rgba, screen_pts)
+        surf.blit(overlay, (0, 0))
+
+    def _goalie_box_path(
+        self,
+        *,
+        side: int,
+        xh: float,
+        bd: float,
+        bh: float,
+        r: float,
+    ) -> list[tuple[float, float]]:
+        """Build the world-frame polyline path for one goalie box.
+
+        Walks from the top goal-line endpoint, along the open-U side
+        (top horizontal → top arc → interior vertical → bottom arc →
+        bottom horizontal) to the bottom goal-line endpoint. The
+        implicit closing edge from last point back to first IS the
+        goal-line side (only drawn if the caller closes the polygon —
+        the outline `lines` call passes closed=False so it stays open)."""
+        x_open = side * xh
+        x_edge = side * (xh - bd)
+        path: list[tuple[float, float]] = [(x_open, +bh)]
+        if r > 0.0:
+            # Top arc — sweep in path-order. side=+1 ⟹ CCW π/2→π;
+            # side=-1 ⟹ CW π/2→0.
+            cx_top = x_edge + side * r
+            cy_top = +bh - r
+            a_start, a_end = (
+                (math.pi / 2, math.pi) if side == +1 else (math.pi / 2, 0.0)
+            )
+            path.extend(self._sample_arc(cx_top, cy_top, r, a_start, a_end))
+            # The vertical segment from top-arc-end to bottom-arc-start
+            # is drawn implicitly by pygame.draw.lines/polygon between
+            # consecutive points. No explicit breakpoint needed.
+            cx_bot = x_edge + side * r
+            cy_bot = -bh + r
+            a_start, a_end = (
+                (math.pi, 3 * math.pi / 2) if side == +1 else (0.0, -math.pi / 2)
+            )
+            path.extend(self._sample_arc(cx_bot, cy_bot, r, a_start, a_end))
+        else:
+            # Sharp corners — three explicit points (legacy geometry).
+            path.append((x_edge, +bh))
+            path.append((x_edge, -bh))
+        path.append((x_open, -bh))
+        return path
+
+    @staticmethod
+    def _sample_arc(
+        cx: float,
+        cy: float,
+        r: float,
+        a_start: float,
+        a_end: float,
+        n_samples: int = 24,
+    ) -> list[tuple[float, float]]:
+        """Sample a circular arc as a list of (x, y) world-frame points.
+        `np.linspace(a_start, a_end, n)` handles either sweep direction
+        (positive or negative angular change) automatically. n_samples=24
+        gives ~4° steps over a quarter-circle — at typical render
+        scales (~250 px/m, r=60 mm ⟹ 15 px) the resulting chord lengths
+        are sub-pixel, so the polyline reads as a smooth arc."""
+        return [
+            (cx + r * math.cos(t), cy + r * math.sin(t))
+            for t in np.linspace(a_start, a_end, n_samples)
+        ]
 
     def _draw_ball(self, surf: pygame.Surface, ball: BallSpec) -> None:
         bs: BallStyle = self.style.ball
