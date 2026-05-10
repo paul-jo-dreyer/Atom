@@ -162,14 +162,6 @@ class AxisOverlayView @JvmOverloads constructor(
     }
 
     companion object {
-        /**
-         * Generate a bright, fully saturated color for a given tag index.
-         * Uses evenly spaced hues around the color wheel.
-         */
-        fun colorForIndex(index: Int): Int {
-            // Golden angle spacing gives good perceptual separation
-            val hue = (index * 137.508f) % 360f
-            return Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
-        }
+        fun colorForIndex(index: Int): Int = TagColors.argbForIndex(index)
     }
 }

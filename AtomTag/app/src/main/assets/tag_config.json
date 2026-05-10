@@ -6,38 +6,38 @@
   "tags": [
     {
       "id": 0,
-      "size_meters": 0.06,
-      "label": "origin"
+      "size_meters": 0.08,
+      "label": "Net"
     },
     {
       "id": 1,
-      "size_meters": 0.06,
-      "label": "tag1"
+      "size_meters": 0.05,
+      "label": "Bot_1"
     },
     {
       "id": 2,
-      "size_meters": 0.06,
-      "label": "tag2"
+      "size_meters": 0.05,
+      "label": "Bot_2"
     },
     {
       "id": 3,
-      "size_meters": 0.06,
-      "label": "tag3"
+      "size_meters": 0.05,
+      "label": "Bot_3"
     },
     {
       "id": 4,
-      "size_meters": 0.06,
-      "label": "tag4"
+      "size_meters": 0.05,
+      "label": "Bot_4"
     },
     {
       "id": 5,
-      "size_meters": 0.06,
-      "label": "tag5"
+      "size_meters": 0.05,
+      "label": "Bot_5"
     },
     {
       "id": 6,
-      "size_meters": 0.06,
-      "label": "tag6"
+      "size_meters": 0.05,
+      "label": "Bot_6"
     }
   ]
 }
