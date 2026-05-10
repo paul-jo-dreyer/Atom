@@ -11,6 +11,10 @@ data class DeviceState(
     val batteryVolts: Float?,
     val lastSeenMs: Long?,
     val pose: TagPose?,
+    val mode: AppMode? = null,
+    val health: DeviceHealth = DeviceHealth.Ok,
+    val statusMessages: List<String> = emptyList(),
+    val team: String? = null,
 ) {
     fun statusAt(nowMs: Long): DeviceStatus {
         val seen = lastSeenMs ?: return DeviceStatus.Offline

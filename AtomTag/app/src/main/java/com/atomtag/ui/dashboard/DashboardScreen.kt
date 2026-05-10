@@ -36,6 +36,8 @@ fun DashboardScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
     val restartStates by viewModel.restartStates.collectAsStateWithLifecycle()
+    val selectedMode by viewModel.selectedMode.collectAsStateWithLifecycle()
+    val applyState by viewModel.applyState.collectAsStateWithLifecycle()
     var selectedTagId by remember { mutableStateOf<Int?>(null) }
 
     Scaffold { padding ->
@@ -53,6 +55,14 @@ fun DashboardScreen(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    item {
+                        ModeSelectorPanel(
+                            selected = selectedMode,
+                            onSelect = viewModel::selectMode,
+                            applyState = applyState,
+                            onApply = viewModel::applySelectedMode,
+                        )
+                    }
                     items(items = state.devices, key = { it.tagId }) { device ->
                         DeviceCard(
                             device = device,
@@ -94,6 +104,8 @@ fun DashboardScreen(
                 onPing = { viewModel.ping(tagId) },
                 onRestart = { viewModel.restart(tagId) },
                 onColorChange = { viewModel.setColor(tagId, it) },
+                onNameChange = { viewModel.setName(tagId, it) },
+                onTeamChange = { viewModel.setTeam(tagId, it) },
             )
         } else {
             LaunchedEffect(tagId) { selectedTagId = null }

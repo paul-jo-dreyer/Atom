@@ -24,6 +24,7 @@ class AxisOverlayView @JvmOverloads constructor(
     )
 
     private var tagData: List<TagOverlayData> = emptyList()
+    private var fieldFrameAxes: Array<FloatArray>? = null
     private var imageWidth = 1
     private var imageHeight = 1
     private var rotationDegrees = 0
@@ -47,8 +48,15 @@ class AxisOverlayView @JvmOverloads constructor(
         color = Color.argb(160, 0, 0, 0); style = Paint.Style.FILL; isAntiAlias = true
     }
 
-    fun update(data: List<TagOverlayData>, imgWidth: Int, imgHeight: Int, rotation: Int) {
+    fun update(
+        data: List<TagOverlayData>,
+        imgWidth: Int,
+        imgHeight: Int,
+        rotation: Int,
+        fieldAxes: Array<FloatArray>? = null,
+    ) {
         tagData = data
+        fieldFrameAxes = fieldAxes
         imageWidth = imgWidth
         imageHeight = imgHeight
         rotationDegrees = rotation
@@ -57,11 +65,39 @@ class AxisOverlayView @JvmOverloads constructor(
 
     fun clear() {
         tagData = emptyList()
+        fieldFrameAxes = null
         postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+
+        fieldFrameAxes?.let { axes ->
+            val origin = mapPoint(axes[0])
+            val xTip = mapPoint(axes[1])
+            val yTip = mapPoint(axes[2])
+            val zTip = mapPoint(axes[3])
+            canvas.drawLine(origin[0], origin[1], xTip[0], xTip[1], paintX)
+            canvas.drawLine(origin[0], origin[1], yTip[0], yTip[1], paintY)
+            canvas.drawLine(origin[0], origin[1], zTip[0], zTip[1], paintZ)
+            canvas.drawCircle(origin[0], origin[1], 8f, paintOrigin)
+            val fieldLabel = "F"
+            val tw = labelPaint.measureText(fieldLabel)
+            val padding = 8f
+            val lx = origin[0]
+            val ly = origin[1] - 16f
+            canvas.drawRoundRect(
+                lx - tw / 2 - padding,
+                ly - labelPaint.textSize,
+                lx + tw / 2 + padding,
+                ly + padding,
+                12f, 12f,
+                labelBgPaint,
+            )
+            labelPaint.color = Color.WHITE
+            canvas.drawText(fieldLabel, lx, ly, labelPaint)
+        }
+
         if (tagData.isEmpty()) return
 
         for (tag in tagData) {

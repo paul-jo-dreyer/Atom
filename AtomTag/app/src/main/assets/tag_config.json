@@ -3,6 +3,11 @@
   "multicast_group": "239.1.1.1",
   "multicast_port": 5000,
   "broadcast_interval_ms": 50,
+  "field_frame": {
+    "x_mm": 451.872,
+    "y_mm": -118.1,
+    "z_mm": -29.7
+  },
   "tags": [
     {
       "id": 0,
@@ -12,32 +17,32 @@
     {
       "id": 1,
       "size_meters": 0.05,
-      "label": "Bot_1"
+      "label": "Atom_1"
     },
     {
       "id": 2,
       "size_meters": 0.05,
-      "label": "Bot_2"
+      "label": "Atom_2"
     },
     {
       "id": 3,
       "size_meters": 0.05,
-      "label": "Bot_3"
+      "label": "Atom_3"
     },
     {
       "id": 4,
       "size_meters": 0.05,
-      "label": "Bot_4"
+      "label": "Atom_4"
     },
     {
       "id": 5,
       "size_meters": 0.05,
-      "label": "Bot_5"
+      "label": "Atom_5"
     },
     {
       "id": 6,
       "size_meters": 0.05,
-      "label": "Bot_6"
+      "label": "Atom_6"
     }
   ]
 }

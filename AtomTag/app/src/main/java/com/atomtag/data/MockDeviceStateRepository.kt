@@ -19,8 +19,6 @@ class MockDeviceStateRepository : DeviceStateRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var tickJob: Job? = null
 
-    private val colorOverrides = mutableMapOf<Int, Int>()
-
     private val _devices = MutableStateFlow(buildInitialDevices())
     override val devices: StateFlow<List<DeviceState>> = _devices.asStateFlow()
 
@@ -39,11 +37,38 @@ class MockDeviceStateRepository : DeviceStateRepository {
         tickJob = null
     }
 
-    override fun setColor(tagId: Int, colorArgb: Int) {
-        colorOverrides[tagId] = colorArgb
+    override fun setName(tagId: Int, name: String) {
+        UserPreferences.setName(tagId, name)
         _devices.update { current ->
-            current.map { d ->
-                if (d.tagId == tagId) d.copy(colorArgb = colorArgb) else d
+            current.map { d -> if (d.tagId == tagId) d.copy(name = name) else d }
+        }
+    }
+
+    override fun setColor(tagId: Int, colorArgb: Int) {
+        UserPreferences.setColor(tagId, colorArgb)
+        _devices.update { current ->
+            current.map { d -> if (d.tagId == tagId) d.copy(colorArgb = colorArgb) else d }
+        }
+    }
+
+    override fun setTeam(tagId: Int, team: String?) {
+        UserPreferences.setTeam(tagId, team)
+        _devices.update { current ->
+            current.map { d -> if (d.tagId == tagId) d.copy(team = team) else d }
+        }
+    }
+
+    override fun applyMode(mode: AppMode) {
+        scope.launch {
+            for (device in _devices.value) {
+                launch {
+                    val willAck = Random.nextFloat() < 0.85f
+                    if (!willAck) return@launch
+                    delay(200L + Random.nextLong(1300L))
+                    _devices.update { current ->
+                        current.map { d -> if (d.tagId == device.tagId) d.copy(mode = mode) else d }
+                    }
+                }
             }
         }
     }
@@ -65,21 +90,41 @@ class MockDeviceStateRepository : DeviceStateRepository {
         return (volts + delta).coerceIn(6.0f, 8.4f)
     }
 
-    private fun colorFor(id: Int): Int = colorOverrides[id] ?: TagColors.argbForIndex(id)
-
     private fun buildInitialDevices(): List<DeviceState> {
         val now = System.currentTimeMillis()
-        return TagConfig.allTagIds().sorted().map { id ->
-            val info = TagConfig.getTagInfo(id)
-            DeviceState(
-                tagId = id,
-                name = info?.label ?: "tag$id",
-                colorArgb = colorFor(id),
-                batteryVolts = 7.4f + Random.nextFloat() * 0.8f,
-                lastSeenMs = now,
-                pose = null,
-            )
-        }
+        return TagConfig.allTagIds()
+            .asSequence()
+            .filter { it != TagConfig.ORIGIN_TAG_ID }
+            .sorted()
+            .map { id ->
+                val info = TagConfig.getTagInfo(id)
+                val override = UserPreferences.getOverride(id)
+                DeviceState(
+                    tagId = id,
+                    name = override?.name ?: info?.label ?: "tag$id",
+                    colorArgb = override?.colorArgb ?: TagColors.argbForIndex(id),
+                    batteryVolts = 7.4f + Random.nextFloat() * 0.8f,
+                    lastSeenMs = now,
+                    pose = null,
+                    mode = AppMode.Sandbox,
+                    health = mockHealthFor(id),
+                    statusMessages = mockMessagesFor(id),
+                    team = override?.team,
+                )
+            }
+            .toList()
+    }
+
+    private fun mockHealthFor(id: Int): DeviceHealth = when (id) {
+        2 -> DeviceHealth.Warning
+        4 -> DeviceHealth.Error
+        else -> DeviceHealth.Ok
+    }
+
+    private fun mockMessagesFor(id: Int): List<String> = when (id) {
+        2 -> listOf("Battery below 20%", "Calibration drift exceeds 2°")
+        4 -> listOf("Motor 2 stalled", "IMU unresponsive")
+        else -> emptyList()
     }
 
     companion object {

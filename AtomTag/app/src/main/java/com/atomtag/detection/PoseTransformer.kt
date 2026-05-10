@@ -12,6 +12,29 @@ import com.atomtag.model.TagPose
 object PoseTransformer {
 
     /**
+     * Transform poses into the field frame: origin-tag frame translated by
+     * (FIELD_FRAME_X_M, FIELD_FRAME_Y_M, FIELD_FRAME_Z_M).
+     *
+     * If the origin tag is not visible, returns camera-frame poses unchanged.
+     */
+    fun transformToFieldFrame(detections: List<TagPose>): List<TagPose> {
+        val originVisible = detections.any { it.tagId == TagConfig.ORIGIN_TAG_ID }
+        val zeroFrame = transformToOriginFrame(detections)
+        if (!originVisible) return zeroFrame
+
+        val dx = TagConfig.FIELD_FRAME_X_M
+        val dy = TagConfig.FIELD_FRAME_Y_M
+        val dz = TagConfig.FIELD_FRAME_Z_M
+        return zeroFrame.map { pose ->
+            val t = pose.transform.copyOf()
+            t[3] = pose.transform[3] - dx
+            t[7] = pose.transform[7] - dy
+            t[11] = pose.transform[11] - dz
+            TagPose(pose.tagId, t, pose.timestampMs)
+        }
+    }
+
+    /**
      * Given all detected poses (in camera frame), return them transformed into the
      * origin tag's coordinate frame.
      */

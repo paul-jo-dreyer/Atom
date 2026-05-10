@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.atomtag.data.UserPreferences
 import com.atomtag.model.TagConfig
 import com.atomtag.service.DetectionService
 import com.atomtag.ui.AppRoot
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         TagConfig.load(this)
+        UserPreferences.init(applicationContext)
         if (!OpenCVLoader.initLocal()) {
             Log.e(TAG, "OpenCV init failed")
         }

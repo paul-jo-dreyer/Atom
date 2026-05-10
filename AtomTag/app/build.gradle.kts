@@ -53,9 +53,6 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.viewpager2:viewpager2:1.0.0")
-    implementation("androidx.fragment:fragment-ktx:1.6.2")
 
     // Compose
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")

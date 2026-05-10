@@ -2,6 +2,7 @@ package com.atomtag.ui.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.atomtag.data.AppMode
 import com.atomtag.data.DeviceState
 import com.atomtag.data.DeviceStateRepository
 import com.atomtag.data.MockDeviceStateRepository
@@ -24,6 +25,14 @@ data class DashboardUiState(
     val nowMs: Long = System.currentTimeMillis(),
 )
 
+data class ApplyState(
+    val inProgress: Boolean = false,
+    val pendingMode: AppMode? = null,
+    val totalDevices: Int = 0,
+    val ackedCount: Int = 0,
+    val timedOut: Boolean = false,
+)
+
 class DevicesViewModel(
     private val repository: DeviceStateRepository = MockDeviceStateRepository(),
 ) : ViewModel() {
@@ -39,6 +48,12 @@ class DevicesViewModel(
         initialValue = DashboardUiState(),
     )
 
+    private val _selectedMode = MutableStateFlow(AppMode.Sandbox)
+    val selectedMode: StateFlow<AppMode> = _selectedMode.asStateFlow()
+
+    private val _applyState = MutableStateFlow(ApplyState())
+    val applyState: StateFlow<ApplyState> = _applyState.asStateFlow()
+
     private val _pingResults = MutableStateFlow<Map<Int, PingResult>>(emptyMap())
     val pingResults: StateFlow<Map<Int, PingResult>> = _pingResults.asStateFlow()
 
@@ -47,6 +62,23 @@ class DevicesViewModel(
 
     init {
         repository.start()
+        viewModelScope.launch {
+            repository.devices.collect { devices ->
+                val current = _applyState.value
+                if (current.inProgress) {
+                    val acked = devices.count { it.mode == current.pendingMode }
+                    if (acked != current.ackedCount) {
+                        _applyState.value = current.copy(ackedCount = acked)
+                    }
+                    if (acked >= current.totalDevices && current.totalDevices > 0) {
+                        _applyState.value = current.copy(
+                            inProgress = false,
+                            ackedCount = acked,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {
@@ -54,27 +86,48 @@ class DevicesViewModel(
         repository.stop()
     }
 
-    fun setColor(tagId: Int, colorArgb: Int) {
-        repository.setColor(tagId, colorArgb)
+    fun selectMode(mode: AppMode) {
+        if (_selectedMode.value == mode) return
+        _selectedMode.value = mode
+        _applyState.value = ApplyState()
     }
 
-    /**
-     * Drop a completed (Acknowledged or TimedOut) restart entry so the action sheet
-     * shows a fresh button next time it opens. Pending restarts are preserved.
-     */
-    fun clearCompletedRestart(tagId: Int) {
-        _restartStates.update { current ->
-            when (current[tagId]) {
-                is RestartState.Acknowledged, is RestartState.TimedOut -> current - tagId
-                else -> current
+    fun applySelectedMode() {
+        val mode = _selectedMode.value
+        val devices = state.value.devices
+        if (devices.isEmpty()) return
+        _applyState.value = ApplyState(
+            inProgress = true,
+            pendingMode = mode,
+            totalDevices = devices.size,
+            ackedCount = devices.count { it.mode == mode },
+            timedOut = false,
+        )
+        repository.applyMode(mode)
+        viewModelScope.launch {
+            delay(APPLY_TIMEOUT_MS)
+            val current = _applyState.value
+            if (current.inProgress && current.pendingMode == mode) {
+                _applyState.value = current.copy(
+                    inProgress = false,
+                    timedOut = current.ackedCount < current.totalDevices,
+                )
             }
         }
     }
 
-    /**
-     * Stubbed ping: simulates a small RTT and an 80% success rate.
-     * Real implementation should send a ping over UDP and listen for a reply.
-     */
+    fun setName(tagId: Int, name: String) {
+        repository.setName(tagId, name)
+    }
+
+    fun setColor(tagId: Int, colorArgb: Int) {
+        repository.setColor(tagId, colorArgb)
+    }
+
+    fun setTeam(tagId: Int, team: String?) {
+        repository.setTeam(tagId, team)
+    }
+
     fun ping(tagId: Int) {
         viewModelScope.launch {
             delay(150L + Random.nextLong(700L))
@@ -85,10 +138,6 @@ class DevicesViewModel(
         }
     }
 
-    /**
-     * Stubbed restart: ~70% of attempts simulate an ack within 3-8 s; the rest
-     * exceed the timeout window and resolve as TimedOut after 20 s.
-     */
     fun restart(tagId: Int) {
         viewModelScope.launch {
             val started = System.currentTimeMillis()
@@ -99,7 +148,6 @@ class DevicesViewModel(
             val waitMs = minOf(ackDelay, RestartState.TIMEOUT_MS)
             delay(waitMs)
 
-            // Re-check the current state; user may have triggered another restart.
             val current = _restartStates.value[tagId]
             if (current is RestartState.Pending && current.startedAtMs == started) {
                 val resolved = if (willAck) {
@@ -108,6 +156,15 @@ class DevicesViewModel(
                     RestartState.TimedOut(started)
                 }
                 _restartStates.update { it + (tagId to resolved) }
+            }
+        }
+    }
+
+    fun clearCompletedRestart(tagId: Int) {
+        _restartStates.update { current ->
+            when (current[tagId]) {
+                is RestartState.Acknowledged, is RestartState.TimedOut -> current - tagId
+                else -> current
             }
         }
     }
@@ -121,5 +178,6 @@ class DevicesViewModel(
 
     companion object {
         private const val CLOCK_TICK_MS = 500L
+        private const val APPLY_TIMEOUT_MS = 8_000L
     }
 }

@@ -15,8 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.RestartAlt
@@ -31,6 +36,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,12 +52,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.atomtag.data.DeviceHealth
 import com.atomtag.data.DeviceState
 import com.atomtag.data.PingResult
 import com.atomtag.data.RestartState
 import com.atomtag.ui.theme.StatusOffline
 import com.atomtag.ui.theme.StatusOnline
+import com.atomtag.ui.theme.StatusStale
 
 private val PresetColors = listOf(
     Color(0xFFEF4444),
@@ -91,12 +100,15 @@ fun DeviceActionSheet(
     onPing: () -> Unit,
     onRestart: () -> Unit,
     onColorChange: (Int) -> Unit,
+    onNameChange: (String) -> Unit,
+    onTeamChange: (String?) -> Unit,
 ) {
     var showSettings by remember(device.tagId) { mutableStateOf(false) }
-    var selectedTeam by remember(device.tagId) { mutableStateOf("None") }
     var customPickerOpen by remember(device.tagId) { mutableStateOf(false) }
+    var editingName by remember(device.tagId) { mutableStateOf(false) }
 
     val currentColor = Color(device.colorArgb)
+    val selectedTeam = device.team ?: "None"
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -108,13 +120,25 @@ fun DeviceActionSheet(
                 pingResult = pingResult,
                 nowMs = nowMs,
                 showSettings = showSettings,
+                editingName = editingName,
                 onToggleSettings = { showSettings = !showSettings },
+                onStartEditName = { editingName = true },
+                onCommitName = { newName ->
+                    if (newName.isNotBlank() && newName != device.name) onNameChange(newName)
+                    editingName = false
+                },
+                onCancelEditName = { editingName = false },
             )
 
             Spacer(Modifier.height(4.dp))
 
             ActionButton(label = "Ping", icon = Icons.Default.NetworkPing, onClick = onPing)
             RestartButton(state = restartState, nowMs = nowMs, onClick = onRestart)
+
+            DeviceStatusSection(
+                health = device.health,
+                messages = device.statusMessages,
+            )
 
             if (showSettings) {
                 Spacer(Modifier.height(8.dp))
@@ -143,7 +167,9 @@ fun DeviceActionSheet(
                         TeamSelectorRow(
                             options = TeamOptions,
                             selected = selectedTeam,
-                            onSelect = { selectedTeam = it },
+                            onSelect = { team ->
+                                onTeamChange(if (team == "None") null else team)
+                            },
                         )
                     }
                 }
@@ -160,7 +186,11 @@ private fun Header(
     pingResult: PingResult?,
     nowMs: Long,
     showSettings: Boolean,
+    editingName: Boolean,
     onToggleSettings: () -> Unit,
+    onStartEditName: () -> Unit,
+    onCommitName: (String) -> Unit,
+    onCancelEditName: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -171,11 +201,32 @@ private fun Header(
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = device.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
+            if (editingName) {
+                NameEditRow(
+                    initial = device.name,
+                    onCommit = onCommitName,
+                    onCancel = onCancelEditName,
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = device.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    IconButton(
+                        onClick = onStartEditName,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Rename device",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "tag ${device.tagId}",
@@ -217,6 +268,37 @@ private fun Header(
             },
         ) {
             Icon(Icons.Default.Tune, contentDescription = "Device settings")
+        }
+    }
+}
+
+@Composable
+private fun NameEditRow(
+    initial: String,
+    onCommit: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onCommit(text) }),
+        )
+        IconButton(
+            onClick = { onCommit(text) },
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(Icons.Default.Check, contentDescription = "Save name")
+        }
+        IconButton(
+            onClick = onCancel,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(Icons.Default.Close, contentDescription = "Cancel")
         }
     }
 }
@@ -270,6 +352,58 @@ private fun RestartButton(state: RestartState?, nowMs: Long, onClick: () -> Unit
                 Spacer(Modifier.width(12.dp))
                 Text(text = "Restart", style = MaterialTheme.typography.bodyLarge)
             }
+        }
+    }
+}
+
+@Composable
+private fun DeviceStatusSection(health: DeviceHealth, messages: List<String>) {
+    val (label, color) = when (health) {
+        DeviceHealth.Ok -> "Good" to StatusOnline
+        DeviceHealth.Warning -> "Warning" to StatusStale
+        DeviceHealth.Error -> "Error" to StatusOffline
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "Status: $label",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        if (messages.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            for (message in messages) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        text = "•",
+                        modifier = Modifier.padding(end = 8.dp),
+                        color = color,
+                    )
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Text(
+                text = "No reported issues.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }

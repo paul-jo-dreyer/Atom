@@ -178,7 +178,7 @@ class DetectionService : LifecycleService() {
             val detections = detector.detect(gray, projectAxes = shouldDrawAxes)
 
             val rawPoses = detections.map { it.pose }
-            val transformed = PoseTransformer.transformToOriginFrame(rawPoses)
+            val transformed = PoseTransformer.transformToFieldFrame(rawPoses)
             val originVisible = rawPoses.any { it.tagId == TagConfig.ORIGIN_TAG_ID }
             for (pose in transformed) poseVector.update(pose)
 
@@ -225,12 +225,15 @@ class DetectionService : LifecycleService() {
                     bottomCenter = if (shouldDrawLabels) det.bottomCenter else null,
                 )
             }
+            val fieldAxes = if (shouldDrawAxes) {
+                detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }?.fieldFrameAxes
+            } else null
             val cols = gray.cols()
             val rows = gray.rows()
             overlayRef?.let { ov ->
                 ov.post {
-                    if (overlayData.isNotEmpty()) {
-                        ov.update(overlayData, cols, rows, rotation)
+                    if (overlayData.isNotEmpty() || fieldAxes != null) {
+                        ov.update(overlayData, cols, rows, rotation, fieldAxes)
                     } else {
                         ov.clear()
                     }

@@ -42,6 +42,40 @@ class AprilTagDetector {
     private val maxMissedFrames = 10
     private val missedFrameCounts = mutableMapOf<Int, Int>()
 
+    /**
+     * Origin-tag pose smoothing. Bot tags pass through unfiltered so robot motion stays
+     * responsive. Rotation gets a much smaller alpha than translation: the field frame is
+     * offset from the origin tag, so small angular noise in the origin's rotation is
+     * amplified to mm-level jitter at the field frame origin (leverage = offset · sin θ).
+     * Translation noise from solvePnP is already small, so translation alpha stays moderate.
+     */
+    private val ORIGIN_FILTER_ALPHA_R = 0.03
+    private val ORIGIN_FILTER_ALPHA_T = 0.15
+    private val originFilterRvec = DoubleArray(3)
+    private val originFilterTvec = DoubleArray(3)
+    private var originFilterInitialized = false
+
+    private fun filterOriginPoseInPlace(rvec: Mat, tvec: Mat) {
+        val r = DoubleArray(3); rvec.get(0, 0, r)
+        val t = DoubleArray(3); tvec.get(0, 0, t)
+        if (!originFilterInitialized) {
+            for (i in 0..2) {
+                originFilterRvec[i] = r[i]
+                originFilterTvec[i] = t[i]
+            }
+            originFilterInitialized = true
+        } else {
+            for (i in 0..2) {
+                originFilterRvec[i] = ORIGIN_FILTER_ALPHA_R * r[i] +
+                    (1.0 - ORIGIN_FILTER_ALPHA_R) * originFilterRvec[i]
+                originFilterTvec[i] = ORIGIN_FILTER_ALPHA_T * t[i] +
+                    (1.0 - ORIGIN_FILTER_ALPHA_T) * originFilterTvec[i]
+            }
+        }
+        rvec.put(0, 0, *originFilterRvec)
+        tvec.put(0, 0, *originFilterTvec)
+    }
+
     fun initIntrinsics(width: Int, height: Int) {
         if (intrinsicsInitialized) return
         val focalLength = width.toDouble()
@@ -174,6 +208,9 @@ class AprilTagDetector {
             )
 
             if (solved) {
+                if (tagId == TagConfig.ORIGIN_TAG_ID) {
+                    filterOriginPoseInPlace(rvec, tvec)
+                }
                 val transform = buildTransformMatrix(rvec, tvec)
                 val pose = TagPose(tagId, transform)
 
@@ -190,11 +227,35 @@ class AprilTagDetector {
                     axisPoints3d.release()
                 }
 
+                var fieldFrameAxes: Array<FloatArray>? = null
+                if (projectAxes && tagId == TagConfig.ORIGIN_TAG_ID) {
+                    val dx = TagConfig.FIELD_FRAME_X_M.toDouble()
+                    val dy = TagConfig.FIELD_FRAME_Y_M.toDouble()
+                    val dz = TagConfig.FIELD_FRAME_Z_M.toDouble()
+                    val fieldAxisLength = tagSize * 0.5
+                    val fieldAxisPoints3d = MatOfPoint3f(
+                        Point3(dx, dy, dz),
+                        Point3(dx + fieldAxisLength, dy, dz),
+                        Point3(dx, dy + fieldAxisLength, dz),
+                        Point3(dx, dy, dz + fieldAxisLength),
+                    )
+                    fieldFrameAxes = projectPoints(rvec, tvec, fieldAxisPoints3d)
+                    fieldAxisPoints3d.release()
+                }
+
                 val bottomCenter3d = MatOfPoint3f(Point3(0.0, -half, 0.0))
                 val bottomProjected = projectPoints(rvec, tvec, bottomCenter3d)[0]
                 bottomCenter3d.release()
 
-                results.add(DetectionResult(pose, axisProjected, bottomProjected, cornerBounds))
+                results.add(
+                    DetectionResult(
+                        pose = pose,
+                        axisPoints = axisProjected,
+                        bottomCenter = bottomProjected,
+                        cornerBounds = cornerBounds,
+                        fieldFrameAxes = fieldFrameAxes,
+                    )
+                )
             }
 
             rvec.release()

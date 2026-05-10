@@ -15,7 +15,7 @@
         android:allowBackup="true"
         android:icon="@mipmap/atom_launcher"
         android:roundIcon="@mipmap/atom_launcher_round"
-        android:label="AtomTag"
+        android:label="@string/app_name"
         android:theme="@style/Theme.AppCompat.NoActionBar">
 
         <activity

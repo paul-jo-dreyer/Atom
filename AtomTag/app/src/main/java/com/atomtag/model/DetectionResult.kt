@@ -15,7 +15,10 @@ data class DetectionResult(
     val pose: TagPose,
     val axisPoints: Array<FloatArray>? = null,
     val bottomCenter: FloatArray? = null,
-    val cornerBounds: Rect? = null
+    val cornerBounds: Rect? = null,
+    /** Projected 2D points for the field-frame axes [origin, x-tip, y-tip, z-tip].
+     *  Only populated on the origin tag's detection result. */
+    val fieldFrameAxes: Array<FloatArray>? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
