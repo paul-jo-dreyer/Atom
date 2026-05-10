@@ -48,8 +48,39 @@ object FieldConfig {
     var GOALIE_BOX_CORNER_RADIUS_M = 0f
         private set
 
+    /** Optional fill color for the goalie-box interior. */
+    enum class GoalieBoxFill { None, Orange, Blue }
+    var GOALIE_BOX_FILL: GoalieBoxFill = GoalieBoxFill.None
+        private set
+
+    /** Tag0 → scoreboard-center translation, in tag-local coordinates (m). */
+    var SCOREBOARD_X_M = 0f
+        private set
+    var SCOREBOARD_Y_M = 0f
+        private set
+    var SCOREBOARD_Z_M = 0f
+        private set
+
+    /** Scoreboard rectangle dimensions (flat plate on the tag's plane), m. */
+    var SCOREBOARD_WIDTH_M = 0f
+        private set
+    var SCOREBOARD_HEIGHT_M = 0f
+        private set
+
+    /** CCW rotation of the scoreboard about its vertical axis, in degrees.
+     *  Applied before translating into tag-local coords; rotates the whole
+     *  layout (plate, score blocks, clock + score glyphs) together. */
+    var SCOREBOARD_ROTATION_DEG = 0f
+        private set
+
     /** Physical ball radius, in meters. Used by the ball detector's geometric gate. */
     var BALL_RADIUS_M = 0.028f
+        private set
+
+    /** Robot body side length, in meters. The body is treated as a cube centered on
+     *  the tag's XY origin with the tag mounted on the top face. Used by the overlay
+     *  renderer to mask field lines under each robot. */
+    var ROBOT_BODY_SIZE_M = 0.060f
         private set
 
     /** A straight line marking, expressed in field-frame coordinates (m). */
@@ -82,13 +113,27 @@ object FieldConfig {
         GOALIE_BOX_Y_M = mm(tagToGoalieBox, "y")
         GOALIE_BOX_Z_M = mm(tagToGoalieBox, "z")
 
+        val tagToScoreboard = xforms?.get("tag0_to_scoreboard") as? Map<*, *>
+        SCOREBOARD_X_M = mm(tagToScoreboard, "x")
+        SCOREBOARD_Y_M = mm(tagToScoreboard, "y")
+        SCOREBOARD_Z_M = mm(tagToScoreboard, "z")
+
         val gbox = root["goalie_box"] as? Map<*, *>
         GOALIE_BOX_WIDTH_M = mm(gbox, "width_mm")
         GOALIE_BOX_HEIGHT_M = mm(gbox, "height_mm")
         GOALIE_BOX_CORNER_RADIUS_M = mm(gbox, "corner_radius_mm")
+        GOALIE_BOX_FILL = parseFill(gbox?.get("fill_color"))
+
+        val scoreboard = root["scoreboard"] as? Map<*, *>
+        SCOREBOARD_WIDTH_M = mm(scoreboard, "width_mm")
+        SCOREBOARD_HEIGHT_M = mm(scoreboard, "height_mm")
+        SCOREBOARD_ROTATION_DEG = asDouble(scoreboard?.get("rotation_deg")).toFloat()
 
         val ball = root["ball"] as? Map<*, *>
         BALL_RADIUS_M = if (ball != null) mm(ball, "radius_mm") else 0.028f
+
+        val robot = root["robot"] as? Map<*, *>
+        ROBOT_BODY_SIZE_M = if (robot != null) mm(robot, "body_mm") else 0.060f
 
         val linesNode = root["lines"] as? List<*>
         val parsedLines = mutableListOf<Line>()
@@ -119,5 +164,11 @@ object FieldConfig {
         is Number -> v.toDouble()
         is String -> v.toDoubleOrNull() ?: 0.0
         else -> 0.0
+    }
+
+    private fun parseFill(v: Any?): GoalieBoxFill = when ((v as? String)?.lowercase()) {
+        "orange" -> GoalieBoxFill.Orange
+        "blue" -> GoalieBoxFill.Blue
+        else -> GoalieBoxFill.None
     }
 }

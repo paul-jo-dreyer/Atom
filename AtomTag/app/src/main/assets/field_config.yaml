@@ -21,16 +21,40 @@ transforms_mm:
     x: 120
     y: -118.1
     z: -29.7
+  tag0_to_scoreboard:
+    x: 0
+    y: -270
+    z: 0       # flat on the tag's plane; sits at tag-face height above the floor.
 
 # Goalie box footprint: a rounded rectangle on the floor, centered at tag0_to_goalie_box.
 goalie_box:
   width_mm: 130         # extent along the field X axis
   height_mm: 200        # extent along the field Y axis
   corner_radius_mm: 20  # corner fillet
+  # Optional fill color for the interior (clipped to field bounds and to robots).
+  # Allowed: orange | blue | none (or omit the key).
+  fill_color: orange
+
+# Flat scoreboard rectangle drawn on the tag's plane. Layout (clock + per-team
+# scores) is laid out in scoreboard-local coordinates inside the renderer.
+scoreboard:
+  width_mm: 120         # along scoreboard-local +X (before rotation)
+  height_mm: 80         # along scoreboard-local +Y (before rotation)
+  # CCW rotation about the scoreboard's vertical (z) axis, in degrees, applied
+  # before placing it in tag-local coords. 90 = bottom edge parallel to the
+  # tag-Y axis. Use 0 / ±90 / 180 to taste.
+  rotation_deg: 90
 
 # Physical ball geometry. Used by the ball detector's geometric size gate.
 ball:
   radius_mm: 28
+
+# Robot body geometry. Treated as a cube centered on the tag's XY origin, with the
+# tag mounted on the top face (tag-local +Z up, body extending in -Z toward floor).
+# Used by the overlay renderer to mask out field lines that fall under each robot's
+# projected silhouette so they don't paint across the robot.
+robot:
+  body_mm: 60
 
 # Field-line markings. Each entry is a straight segment expressed in FIELD-frame coords.
 # Add more as needed (sidelines, halfway line, etc.). Curves / arcs would need a schema

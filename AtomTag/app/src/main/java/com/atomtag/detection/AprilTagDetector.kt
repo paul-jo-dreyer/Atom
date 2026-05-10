@@ -2,17 +2,22 @@ package com.atomtag.detection
 
 import com.atomtag.model.DetectionResult
 import com.atomtag.model.FieldConfig
+import com.atomtag.model.ScoreboardData
+import com.atomtag.model.ScoreboardOverlay
 import com.atomtag.model.TagConfig
 import com.atomtag.model.TagPose
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
+import org.opencv.core.MatOfInt
+import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.MatOfPoint3f
 import org.opencv.core.Point
 import org.opencv.core.Point3
 import org.opencv.core.Rect
+import org.opencv.imgproc.Imgproc
 import org.opencv.objdetect.ArucoDetector
 import org.opencv.objdetect.DetectorParameters
 import org.opencv.objdetect.Objdetect
@@ -100,11 +105,12 @@ class AprilTagDetector {
         grayFrame: Mat,
         projectAxes: Boolean = false,
         projectFieldOverlay: Boolean = false,
+        scoreboardData: ScoreboardData = ScoreboardData(),
     ): List<DetectionResult> {
         if (!intrinsicsInitialized) return emptyList()
 
         // Step 1: Full-frame detection
-        val results = detectInRegion(grayFrame, 0, 0, projectAxes, projectFieldOverlay)
+        val results = detectInRegion(grayFrame, 0, 0, projectAxes, projectFieldOverlay, scoreboardData)
         val foundIds = results.map { it.pose.tagId }.toSet()
 
         // Step 2: ROI re-detection for missing tags that were recently seen
@@ -131,7 +137,7 @@ class AprilTagDetector {
 
             val roi = Rect(roiX, roiY, roiW, roiH)
             val cropped = Mat(grayFrame, roi)
-            val roiDetections = detectInRegion(cropped, roiX, roiY, projectAxes, projectFieldOverlay)
+            val roiDetections = detectInRegion(cropped, roiX, roiY, projectAxes, projectFieldOverlay, scoreboardData)
             cropped.release()
 
             // Only keep the tag we were looking for
@@ -201,6 +207,7 @@ class AprilTagDetector {
     private fun buildDetectionResult(
         tagId: Int, rvec: Mat, tvec: Mat, inputs: TagInputs,
         projectAxes: Boolean, projectFieldOverlay: Boolean,
+        scoreboardData: ScoreboardData,
     ): DetectionResult {
         val transform = buildTransformMatrix(rvec, tvec)
         val pose = TagPose(tagId, transform)
@@ -252,8 +259,22 @@ class AprilTagDetector {
         }
 
         var goalieBoxOutline: List<Array<FloatArray>>? = null
+        var goalieBoxFill: Array<FloatArray>? = null
         if (projectFieldOverlay && tagId == TagConfig.ORIGIN_TAG_ID) {
             goalieBoxOutline = projectGoalieBoxOutline(rvec, tvec)
+            if (FieldConfig.GOALIE_BOX_FILL != FieldConfig.GoalieBoxFill.None) {
+                goalieBoxFill = projectGoalieBoxFill(rvec, tvec)
+            }
+        }
+
+        var scoreboard: ScoreboardOverlay? = null
+        if (projectFieldOverlay && tagId == TagConfig.ORIGIN_TAG_ID) {
+            scoreboard = projectScoreboard(rvec, tvec, scoreboardData)
+        }
+
+        var robotSilhouette: Array<FloatArray>? = null
+        if (projectFieldOverlay && tagId != TagConfig.ORIGIN_TAG_ID) {
+            robotSilhouette = projectRobotSilhouette(rvec, tvec)
         }
 
         val bottomCenter3d = MatOfPoint3f(Point3(0.0, -inputs.half, 0.0))
@@ -268,7 +289,48 @@ class AprilTagDetector {
             fieldFrameAxes = fieldFrameAxes,
             fieldLines = fieldLines,
             goalieBoxOutline = goalieBoxOutline,
+            robotSilhouette = robotSilhouette,
+            goalieBoxFill = goalieBoxFill,
+            scoreboard = scoreboard,
         )
+    }
+
+    /**
+     * Project the 8 corners of the robot's body cube (side
+     * [FieldConfig.ROBOT_BODY_SIZE_M], centered on the tag's XY, with the tag
+     * on the top face — i.e. cube extends from z=0 down to z=-side in tag-local
+     * coords) into image space, then take the 2D convex hull.
+     *
+     * The hull is the robot's silhouette in the camera image. The renderer
+     * uses it as a `clipOutPath` mask, so any field lines that would have
+     * painted across the robot get suppressed.
+     *
+     * Returns null if the cube degenerates (zero/negative size) or if convex-hull
+     * extraction produces fewer than 3 vertices.
+     */
+    private fun projectRobotSilhouette(rvec: Mat, tvec: Mat): Array<FloatArray>? {
+        val s = FieldConfig.ROBOT_BODY_SIZE_M.toDouble()
+        if (s <= 0.0) return null
+        val h = s / 2.0
+        val cubePts = MatOfPoint3f(
+            Point3(-h, -h,  0.0), Point3( h, -h,  0.0),
+            Point3( h,  h,  0.0), Point3(-h,  h,  0.0),
+            Point3(-h, -h, -s),   Point3( h, -h, -s),
+            Point3( h,  h, -s),   Point3(-h,  h, -s),
+        )
+        val projected = projectPoints(rvec, tvec, cubePts)
+        cubePts.release()
+
+        val cvPts = MatOfPoint(*Array(projected.size) {
+            Point(projected[it][0].toDouble(), projected[it][1].toDouble())
+        })
+        val hullIdx = MatOfInt()
+        Imgproc.convexHull(cvPts, hullIdx)
+        val idxArr = hullIdx.toArray()
+        cvPts.release()
+        hullIdx.release()
+        if (idxArr.size < 3) return null
+        return Array(idxArr.size) { projected[idxArr[it]] }
     }
 
     /**
@@ -418,8 +480,261 @@ class AprilTagDetector {
         )
     }
 
+    /**
+     * Sutherland-Hodgman polygon clipping against a series of half-planes (each
+     * plane keeps points on its `+` side). Operates on the ground plane (x,y);
+     * z is interpolated linearly along introduced edges so the projection later
+     * stays consistent. Input polygon should be CCW; output is CCW too.
+     * Returns an empty list if the polygon is entirely clipped away.
+     */
+    private fun clipPolygonToHalfPlanes(
+        poly: List<Point3>, planes: List<HalfPlane>,
+    ): List<Point3> {
+        if (poly.isEmpty()) return emptyList()
+        var current: List<Point3> = poly
+        for (p in planes) {
+            if (current.isEmpty()) return emptyList()
+            val next = ArrayList<Point3>(current.size + 2)
+            val m = current.size
+            for (i in 0 until m) {
+                val a = current[i]
+                val b = current[(i + 1) % m]
+                val da = p.nx * (a.x - p.ax) + p.ny * (a.y - p.ay)
+                val db = p.nx * (b.x - p.ax) + p.ny * (b.y - p.ay)
+                val aIn = da >= 0
+                val bIn = db >= 0
+                if (aIn) next.add(a)
+                if (aIn != bIn) {
+                    val tCross = da / (da - db)
+                    next.add(Point3(
+                        a.x + tCross * (b.x - a.x),
+                        a.y + tCross * (b.y - a.y),
+                        a.z + tCross * (b.z - a.z),
+                    ))
+                }
+            }
+            current = next
+        }
+        return current
+    }
+
+    /**
+     * Project the visible portion of the goalie-box footprint as a CCW closed
+     * polygon (3+ vertices). Uses the same rounded-rect boundary as the outline
+     * but Sutherland-Hodgman clips it (so chord edges along the field-boundary
+     * lines ARE included, giving a closed shape suitable for a fill paint).
+     *
+     * Returns null if no fill is configured, dimensions are degenerate, or the
+     * clipped polygon collapses below 3 vertices.
+     */
+    private fun projectGoalieBoxFill(rvec: Mat, tvec: Mat): Array<FloatArray>? {
+        val w = FieldConfig.GOALIE_BOX_WIDTH_M.toDouble()
+        val h = FieldConfig.GOALIE_BOX_HEIGHT_M.toDouble()
+        if (w <= 0.0 || h <= 0.0) return null
+
+        val cx = FieldConfig.GOALIE_BOX_X_M.toDouble()
+        val cy = FieldConfig.GOALIE_BOX_Y_M.toDouble()
+        val cz = FieldConfig.GOALIE_BOX_Z_M.toDouble()
+        val r = min(FieldConfig.GOALIE_BOX_CORNER_RADIUS_M.toDouble(), min(w, h) / 2.0)
+        val hw = w / 2.0
+        val hh = h / 2.0
+
+        val corners = arrayOf(
+            doubleArrayOf(cx + hw - r, cy + hh - r, 0.0),
+            doubleArrayOf(cx - hw + r, cy + hh - r, PI / 2.0),
+            doubleArrayOf(cx - hw + r, cy - hh + r, PI),
+            doubleArrayOf(cx + hw - r, cy - hh + r, 3.0 * PI / 2.0),
+        )
+
+        val boundary = mutableListOf<Point3>()
+        for (c in corners) {
+            val ccx = c[0]; val ccy = c[1]; val a0 = c[2]
+            for (i in 0..SAMPLES_PER_CORNER) {
+                val angle = a0 + (PI / 2.0) * i / SAMPLES_PER_CORNER
+                boundary.add(Point3(ccx + r * cos(angle), ccy + r * sin(angle), cz))
+            }
+        }
+
+        val planes = buildFieldBoundaryHalfPlanes()
+        val clipped = if (planes.isEmpty()) boundary else clipPolygonToHalfPlanes(boundary, planes)
+        if (clipped.size < 3) return null
+
+        val mat = MatOfPoint3f(*clipped.toTypedArray())
+        val projected = projectPoints(rvec, tvec, mat)
+        mat.release()
+        return projected
+    }
+
+    /**
+     * Project the scoreboard plate, the per-team score blocks, and the 7-segment
+     * glyphs for the clock + scores. The scoreboard is a flat rectangle at z=0
+     * in tag-local coords centered at FieldConfig.SCOREBOARD_*_M, optionally
+     * rotated about its vertical axis by FieldConfig.SCOREBOARD_ROTATION_DEG.
+     *
+     * Layout is built in scoreboard-LOCAL 2D (origin at center, +X right, +Y up,
+     * before rotation). Rotation + translation happens once at the very end so
+     * every element — plate, blocks, digit segments, colon dots — rotates as
+     * one rigid layout.
+     */
+    private fun projectScoreboard(
+        rvec: Mat, tvec: Mat, data: ScoreboardData,
+    ): ScoreboardOverlay? {
+        val w = FieldConfig.SCOREBOARD_WIDTH_M.toDouble()
+        val h = FieldConfig.SCOREBOARD_HEIGHT_M.toDouble()
+        if (w <= 0.0 || h <= 0.0) return null
+
+        val cx = FieldConfig.SCOREBOARD_X_M.toDouble()
+        val cy = FieldConfig.SCOREBOARD_Y_M.toDouble()
+        val cz = FieldConfig.SCOREBOARD_Z_M.toDouble()
+        val hw = w / 2.0
+        val hh = h / 2.0
+
+        // === scoreboard-local 2D ===
+        // Plate corners — CCW so Path winding fills cleanly.
+        val plateLocal = listOf(
+            doubleArrayOf( hw, -hh),
+            doubleArrayOf( hw,  hh),
+            doubleArrayOf(-hw,  hh),
+            doubleArrayOf(-hw, -hh),
+        )
+
+        // Score-block extents.
+        val scoreRowYTop = -h * 0.04
+        val scoreRowYBot = -h * 0.46
+        val orangeXMin = -w * 0.42
+        val orangeXMax = -w * 0.04
+        val blueXMin   =  w * 0.04
+        val blueXMax   =  w * 0.42
+        val orangeLocal = listOf(
+            doubleArrayOf(orangeXMax, scoreRowYBot),
+            doubleArrayOf(orangeXMax, scoreRowYTop),
+            doubleArrayOf(orangeXMin, scoreRowYTop),
+            doubleArrayOf(orangeXMin, scoreRowYBot),
+        )
+        val blueLocal = listOf(
+            doubleArrayOf(blueXMax, scoreRowYBot),
+            doubleArrayOf(blueXMax, scoreRowYTop),
+            doubleArrayOf(blueXMin, scoreRowYTop),
+            doubleArrayOf(blueXMin, scoreRowYBot),
+        )
+
+        // Glyph cell ~10mm × 22mm on a 120×80 plate.
+        val digitW = w * 0.083
+        val digitH = h * 0.275
+        val halfDW = digitW / 2.0
+        val halfDH = digitH / 2.0
+
+        val clockY =  h * 0.22
+        val scoreY = -h * 0.25
+        val pitch = digitW + w * 0.025
+        val clockXs = doubleArrayOf(
+            -pitch * 1.5, -pitch * 0.5, pitch * 0.5, pitch * 1.5,
+        )
+        val orangeScoreX = (orangeXMin + orangeXMax) / 2.0
+        val blueScoreX = (blueXMin + blueXMax) / 2.0
+
+        val totalSec = (data.clockMs / 1000L).coerceAtLeast(0L)
+        val mm = (totalSec / 60L).coerceAtMost(99L)
+        val ss = totalSec % 60L
+        val clockDigits = intArrayOf(
+            (mm / 10).toInt(), (mm % 10).toInt(),
+            (ss / 10).toInt(), (ss % 10).toInt(),
+        )
+
+        val glyphLocal = mutableListOf<DoubleArray>()
+        for (i in clockDigits.indices) {
+            emitDigitLocal(glyphLocal, clockXs[i], clockY, halfDW, halfDH, clockDigits[i])
+        }
+        // Colon: two short horizontal dashes.
+        val colonR = digitW * 0.12
+        val colonYTop = clockY + halfDH * 0.45
+        val colonYBot = clockY - halfDH * 0.45
+        glyphLocal.add(doubleArrayOf(-colonR, colonYTop))
+        glyphLocal.add(doubleArrayOf( colonR, colonYTop))
+        glyphLocal.add(doubleArrayOf(-colonR, colonYBot))
+        glyphLocal.add(doubleArrayOf( colonR, colonYBot))
+
+        emitDigitLocal(glyphLocal, orangeScoreX, scoreY, halfDW, halfDH, data.orangeScore.coerceIn(0, 9))
+        emitDigitLocal(glyphLocal, blueScoreX,   scoreY, halfDW, halfDH, data.blueScore.coerceIn(0, 9))
+
+        // === scoreboard-local → tag-local: rotate about (0,0) then translate by (cx,cy). ===
+        val rotRad = Math.toRadians(FieldConfig.SCOREBOARD_ROTATION_DEG.toDouble())
+        val cosA = cos(rotRad)
+        val sinA = sin(rotRad)
+        fun toTag(p: DoubleArray): Point3 = Point3(
+            cx + p[0] * cosA - p[1] * sinA,
+            cy + p[0] * sinA + p[1] * cosA,
+            cz,
+        )
+
+        val plateBase = 0
+        val orangeBase = plateBase + plateLocal.size
+        val blueBase = orangeBase + orangeLocal.size
+        val glyphsBase = blueBase + blueLocal.size
+        val flat = ArrayList<Point3>(glyphsBase + glyphLocal.size)
+        for (p in plateLocal) flat.add(toTag(p))
+        for (p in orangeLocal) flat.add(toTag(p))
+        for (p in blueLocal) flat.add(toTag(p))
+        for (p in glyphLocal) flat.add(toTag(p))
+
+        val mat = MatOfPoint3f(*flat.toTypedArray())
+        val projected = projectPoints(rvec, tvec, mat)
+        mat.release()
+
+        val plateQuad = Array(plateLocal.size) { projected[plateBase + it] }
+        val orangeQuad = Array(orangeLocal.size) { projected[orangeBase + it] }
+        val blueQuad = Array(blueLocal.size) { projected[blueBase + it] }
+        val segments = ArrayList<Array<FloatArray>>(glyphLocal.size / 2)
+        var idx = glyphsBase
+        while (idx + 1 < projected.size) {
+            segments.add(arrayOf(projected[idx], projected[idx + 1]))
+            idx += 2
+        }
+        return ScoreboardOverlay(plateQuad, orangeQuad, blueQuad, segments)
+    }
+
+    /** Append the lit segments of a 7-seg digit (in scoreboard-LOCAL 2D, before
+     *  rotation) to `out` as endpoint pairs. */
+    private fun emitDigitLocal(
+        out: MutableList<DoubleArray>,
+        cx: Double, cy: Double, hw: Double, hh: Double,
+        digit: Int,
+    ) {
+        val mask = SEVEN_SEG[digit.coerceIn(0, 9)]
+        val tl = doubleArrayOf(cx - hw, cy + hh)
+        val tr = doubleArrayOf(cx + hw, cy + hh)
+        val ml = doubleArrayOf(cx - hw, cy)
+        val mr = doubleArrayOf(cx + hw, cy)
+        val bl = doubleArrayOf(cx - hw, cy - hh)
+        val br = doubleArrayOf(cx + hw, cy - hh)
+        // a top, b upper-right, c lower-right, d bottom, e lower-left, f upper-left, g middle
+        val segs = arrayOf(
+            tl to tr, tr to mr, mr to br, bl to br, ml to bl, tl to ml, ml to mr,
+        )
+        for (i in 0..6) {
+            if ((mask shr i) and 1 == 1) {
+                out.add(segs[i].first)
+                out.add(segs[i].second)
+            }
+        }
+    }
+
     private companion object {
         const val SAMPLES_PER_CORNER = 8
+
+        /** Bit i = segment i lit (a=0, b=1, c=2, d=3, e=4, f=5, g=6). */
+        val SEVEN_SEG = intArrayOf(
+            0b0111111, // 0: a b c d e f
+            0b0000110, // 1: b c
+            0b1011011, // 2: a b d e g
+            0b1001111, // 3: a b c d g
+            0b1100110, // 4: b c f g
+            0b1101101, // 5: a c d f g
+            0b1111101, // 6: a c d e f g
+            0b0000111, // 7: a b c
+            0b1111111, // 8: a b c d e f g
+            0b1101111, // 9: a b c d f g
+        )
     }
 
     /**
@@ -436,6 +751,7 @@ class AprilTagDetector {
     private fun detectInRegion(
         region: Mat, offsetX: Int, offsetY: Int,
         projectAxes: Boolean, projectFieldOverlay: Boolean,
+        scoreboardData: ScoreboardData,
     ): List<DetectionResult> {
         val corners = mutableListOf<Mat>()
         val ids = Mat()
@@ -470,7 +786,7 @@ class AprilTagDetector {
                 rvec, tvec
             )
             if (solved) {
-                val det = buildDetectionResult(tagId, rvec, tvec, inputs, projectAxes, projectFieldOverlay)
+                val det = buildDetectionResult(tagId, rvec, tvec, inputs, projectAxes, projectFieldOverlay, scoreboardData)
                 results.add(det)
                 // Tag's local +Z in camera frame = third column of R, which is
                 // (transform[2], transform[6], transform[10]) in row-major form.
@@ -507,7 +823,7 @@ class AprilTagDetector {
             if (solved) {
                 filterOriginPoseInPlace(rvec, tvec)
                 val det = buildDetectionResult(
-                    TagConfig.ORIGIN_TAG_ID, rvec, tvec, inputs, projectAxes, projectFieldOverlay
+                    TagConfig.ORIGIN_TAG_ID, rvec, tvec, inputs, projectAxes, projectFieldOverlay, scoreboardData
                 )
                 results.add(det)
             }

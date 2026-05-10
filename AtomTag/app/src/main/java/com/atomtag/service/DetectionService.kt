@@ -25,6 +25,7 @@ import com.atomtag.detection.AprilTagDetector
 import com.atomtag.detection.BallDetector
 import com.atomtag.detection.PoseTransformer
 import com.atomtag.detection.StateTracker
+import com.atomtag.model.ScoreboardData
 import com.atomtag.model.TagConfig
 import com.atomtag.network.BroadcastPacket
 import com.atomtag.network.UdpBroadcaster
@@ -62,6 +63,11 @@ class DetectionService : LifecycleService() {
 
     @Volatile private var broadcastMode: AppMode = AppMode.Sandbox
     fun setBroadcastMode(mode: AppMode) { broadcastMode = mode }
+
+    /** Stub scoreboard state — no game-state source plumbed in yet. Set this
+     *  from a future match-state owner to drive the rendered clock + scores. */
+    @Volatile private var scoreboardData: ScoreboardData = ScoreboardData()
+    fun setScoreboardData(data: ScoreboardData) { scoreboardData = data }
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var preview: Preview? = null
@@ -195,6 +201,7 @@ class DetectionService : LifecycleService() {
                 gray,
                 projectAxes = shouldDrawAxes,
                 projectFieldOverlay = shouldDrawFieldOverlay,
+                scoreboardData = scoreboardData,
             )
 
             val rawPoses = detections.map { it.pose }
@@ -281,6 +288,7 @@ class DetectionService : LifecycleService() {
                     tagId = det.pose.tagId,
                     axisPoints = if (shouldDrawAxes) det.axisPoints else null,
                     bottomCenter = if (shouldDrawLabels) det.bottomCenter else null,
+                    silhouette = if (shouldDrawFieldOverlay) det.robotSilhouette else null,
                 )
             }
             val fieldAxes = if (shouldDrawAxes) {
@@ -289,6 +297,8 @@ class DetectionService : LifecycleService() {
             val originDet = detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }
             val fieldLines = if (shouldDrawFieldOverlay) originDet?.fieldLines else null
             val goalieBoxOutline = if (shouldDrawFieldOverlay) originDet?.goalieBoxOutline else null
+            val goalieBoxFill = if (shouldDrawFieldOverlay) originDet?.goalieBoxFill else null
+            val scoreboardOverlay = if (shouldDrawFieldOverlay) originDet?.scoreboard else null
             val ballOverlay = ballResult?.candidates?.map {
                 AxisOverlayView.BallOverlayData(
                     pixelU = it.pixelU.toFloat(),
@@ -305,9 +315,14 @@ class DetectionService : LifecycleService() {
                         fieldAxes != null ||
                         ballOverlay.isNotEmpty() ||
                         !fieldLines.isNullOrEmpty() ||
-                        !goalieBoxOutline.isNullOrEmpty()
+                        !goalieBoxOutline.isNullOrEmpty() ||
+                        goalieBoxFill != null ||
+                        scoreboardOverlay != null
                     if (hasContent) {
-                        ov.update(overlayData, cols, rows, rotation, fieldAxes, ballOverlay, fieldLines, goalieBoxOutline)
+                        ov.update(
+                            overlayData, cols, rows, rotation, fieldAxes, ballOverlay,
+                            fieldLines, goalieBoxOutline, goalieBoxFill, scoreboardOverlay,
+                        )
                     } else {
                         ov.clear()
                     }

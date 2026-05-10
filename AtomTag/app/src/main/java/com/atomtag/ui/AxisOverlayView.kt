@@ -4,8 +4,11 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.util.AttributeSet
 import android.view.View
+import com.atomtag.model.FieldConfig
+import com.atomtag.model.ScoreboardOverlay
 
 /**
  * Transparent overlay that draws coordinate frame axes and tag index labels.
@@ -20,7 +23,11 @@ class AxisOverlayView @JvmOverloads constructor(
     data class TagOverlayData(
         val tagId: Int,
         val axisPoints: Array<FloatArray>?,
-        val bottomCenter: FloatArray?
+        val bottomCenter: FloatArray?,
+        /** Convex-hull silhouette of the robot body in image space. When the
+         *  field overlay is on, this gets `clipOutPath`'d before field lines /
+         *  goalie box are drawn so painted lines don't run across the robot. */
+        val silhouette: Array<FloatArray>? = null,
     )
 
     /** Hollow-circle marker for a green-ball candidate in unrotated image space. */
@@ -36,6 +43,8 @@ class AxisOverlayView @JvmOverloads constructor(
     private var ballData: List<BallOverlayData> = emptyList()
     private var fieldLineSegments: List<Array<FloatArray>>? = null
     private var goalieBoxSegments: List<Array<FloatArray>>? = null
+    private var goalieBoxFillPolygon: Array<FloatArray>? = null
+    private var scoreboardOverlay: ScoreboardOverlay? = null
     private var imageWidth = 1
     private var imageHeight = 1
     private var rotationDegrees = 0
@@ -71,6 +80,36 @@ class AxisOverlayView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
         isAntiAlias = true
     }
+    // === Team color palette ===
+    // Single source of truth for the team-color overlays (goalie-box fill +
+    // scoreboard score blocks). Tweak these to retune both at once. RGB values
+    // are 0–255; per-paint alpha is set on the paints below to keep the fill
+    // softer than the score block's tint.
+    private val orangeR = 250; private val orangeG = 136; private val orangeB = 25
+    private val blueR   =  25; private val blueG   = 129; private val blueB   = 255
+
+    private val goalieFillOrangePaint = Paint().apply {
+        color = Color.argb(150, orangeR, orangeG, orangeB); style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val goalieFillBluePaint = Paint().apply {
+        color = Color.argb(150, blueR, blueG, blueB); style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val scoreboardPlatePaint = Paint().apply {
+        color = Color.argb(220, 22, 22, 22); style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val scoreboardOrangeBlockPaint = Paint().apply {
+        color = Color.argb(200, orangeR, orangeG, orangeB); style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val scoreboardBlueBlockPaint = Paint().apply {
+        color = Color.argb(200, blueR, blueG, blueB); style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val scoreboardGlyphPaint = Paint().apply {
+        color = Color.WHITE
+        strokeWidth = 4f
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
 
     fun update(
         data: List<TagOverlayData>,
@@ -81,12 +120,16 @@ class AxisOverlayView @JvmOverloads constructor(
         balls: List<BallOverlayData> = emptyList(),
         fieldLines: List<Array<FloatArray>>? = null,
         goalieBoxOutline: List<Array<FloatArray>>? = null,
+        goalieBoxFill: Array<FloatArray>? = null,
+        scoreboard: ScoreboardOverlay? = null,
     ) {
         tagData = data
         fieldFrameAxes = fieldAxes
         ballData = balls
         fieldLineSegments = fieldLines
         goalieBoxSegments = goalieBoxOutline
+        goalieBoxFillPolygon = goalieBoxFill
+        scoreboardOverlay = scoreboard
         imageWidth = imgWidth
         imageHeight = imgHeight
         rotationDegrees = rotation
@@ -99,22 +142,78 @@ class AxisOverlayView @JvmOverloads constructor(
         ballData = emptyList()
         fieldLineSegments = null
         goalieBoxSegments = null
+        goalieBoxFillPolygon = null
+        scoreboardOverlay = null
         postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // Field markings (drawn first so tags / ball / axes sit on top).
-        fieldLineSegments?.forEach { line ->
-            val a = mapPoint(line[0])
-            val b = mapPoint(line[1])
-            canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
-        }
-        goalieBoxSegments?.forEach { segment ->
-            val a = mapPoint(segment[0])
-            val b = mapPoint(segment[1])
-            canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
+        // Field markings + fill + scoreboard: all flat-on-the-floor overlays. They
+        // share one clip-out region so robots and a gated ball punch through every
+        // one of them uniformly (no painted line, fill, or scoreboard glyph runs
+        // across a robot or the ball).
+        val hasFieldOverlay = !fieldLineSegments.isNullOrEmpty() ||
+            !goalieBoxSegments.isNullOrEmpty() ||
+            goalieBoxFillPolygon != null ||
+            scoreboardOverlay != null
+        if (hasFieldOverlay) {
+            canvas.save()
+            for (tag in tagData) {
+                val sil = tag.silhouette ?: continue
+                if (sil.size < 3) continue
+                val path = Path()
+                val first = mapPoint(sil[0])
+                path.moveTo(first[0], first[1])
+                for (i in 1 until sil.size) {
+                    val p = mapPoint(sil[i])
+                    path.lineTo(p[0], p[1])
+                }
+                path.close()
+                canvas.clipOutPath(path)
+            }
+            val ballScale = viewScale()
+            for (ball in ballData) {
+                if (!ball.passedGate) continue
+                val c = mapPoint(floatArrayOf(ball.pixelU, ball.pixelV))
+                val r = ball.pixelRadius * ballScale
+                if (r <= 0f) continue
+                val path = Path()
+                path.addCircle(c[0], c[1], r, Path.Direction.CW)
+                canvas.clipOutPath(path)
+            }
+            goalieBoxFillPolygon?.let { poly ->
+                val paint = when (FieldConfig.GOALIE_BOX_FILL) {
+                    FieldConfig.GoalieBoxFill.Orange -> goalieFillOrangePaint
+                    FieldConfig.GoalieBoxFill.Blue -> goalieFillBluePaint
+                    FieldConfig.GoalieBoxFill.None -> null
+                }
+                if (paint != null && poly.size >= 3) {
+                    canvas.drawPath(buildClosedPath(poly), paint)
+                }
+            }
+            fieldLineSegments?.forEach { line ->
+                val a = mapPoint(line[0])
+                val b = mapPoint(line[1])
+                canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
+            }
+            goalieBoxSegments?.forEach { segment ->
+                val a = mapPoint(segment[0])
+                val b = mapPoint(segment[1])
+                canvas.drawLine(a[0], a[1], b[0], b[1], fieldLinePaint)
+            }
+            scoreboardOverlay?.let { sb ->
+                canvas.drawPath(buildClosedPath(sb.backgroundQuad), scoreboardPlatePaint)
+                canvas.drawPath(buildClosedPath(sb.orangeBlock), scoreboardOrangeBlockPaint)
+                canvas.drawPath(buildClosedPath(sb.blueBlock), scoreboardBlueBlockPaint)
+                for (seg in sb.glyphSegments) {
+                    val a = mapPoint(seg[0])
+                    val b = mapPoint(seg[1])
+                    canvas.drawLine(a[0], a[1], b[0], b[1], scoreboardGlyphPaint)
+                }
+            }
+            canvas.restore()
         }
 
         fieldFrameAxes?.let { axes ->
@@ -250,6 +349,21 @@ class AxisOverlayView @JvmOverloads constructor(
         val vy = rotatedY * scale + offsetY
 
         return floatArrayOf(vx, vy)
+    }
+
+    /** Build a closed Path from an array of [u, v] image-space points, mapping
+     *  each through [mapPoint] into view-space first. */
+    private fun buildClosedPath(points: Array<FloatArray>): Path {
+        val path = Path()
+        if (points.isEmpty()) return path
+        val first = mapPoint(points[0])
+        path.moveTo(first[0], first[1])
+        for (i in 1 until points.size) {
+            val p = mapPoint(points[i])
+            path.lineTo(p[0], p[1])
+        }
+        path.close()
+        return path
     }
 
     /** Same scale factor mapPoint uses, exposed so radii in image pixels can be scaled to view pixels. */

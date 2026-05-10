@@ -127,6 +127,8 @@ AtomTag/
 │           ├── model/
 │           │   ├── DetectionResult.kt    ← per-tag detector output
 │           │   ├── FieldConfig.kt        ← field-layout singleton (YAML)
+│           │   ├── ScoreboardData.kt     ← clock + per-team scores (overlay input)
+│           │   ├── ScoreboardOverlay.kt  ← projected plate + blocks + glyphs
 │           │   ├── TagConfig.kt          ← AprilTag identity singleton (JSON)
 │           │   └── TagPose.kt            ← (tagId, 4×4 transform, ts)
 │           ├── network/
@@ -400,19 +402,40 @@ size_mm:
   x: 1000
   y: 600
 transforms_mm:
-  tag0_to_field:      { x: 451.872, y: -118.1, z: -29.7 }
-  tag0_to_goalie_box: { x: 0, y: 0, z: 0 }
+  tag0_to_field:       { x: 451.872, y: -118.1, z: -29.7 }
+  tag0_to_goalie_box:  { x: 0, y: 0, z: 0 }
+  tag0_to_scoreboard:  { x: 0, y: -200, z: 0 }
 goalie_box:
   width_mm: 100         # along field X
   height_mm: 200        # along field Y
   corner_radius_mm: 20
+  fill_color: orange    # orange | blue | none/omit (no fill)
+scoreboard:
+  width_mm: 120         # flat plate on the tag plane
+  height_mm: 80
 ball:
   radius_mm: 28
+robot:
+  body_mm: 60           # cube side length, tag mounted on top face
 lines:
   - name: goal_line
     from_mm: [-374, -60, 0]
     to_mm:   [-374,  60, 0]
 ```
+
+`AprilTagDetector` projects four flat-on-floor overlays from the origin tag's
+pose: the field lines (`fieldLines`), the goalie-box outline (`goalieBoxOutline`,
+parametric-clipped against field bounds), the goalie-box fill (`goalieBoxFill`,
+Sutherland-Hodgman polygon clip — only when `fill_color` is non-`none`), and the
+scoreboard (`ScoreboardOverlay` — plate, per-team blocks, and 7-segment glyphs
+laid out in scoreboard-local meters). `projectRobotSilhouette` projects each
+non-origin tag's body cube (8 corners → image-space convex hull).
+
+`AxisOverlayView` paints all four flat overlays inside one `clipOutPath` region
+that subtracts every robot silhouette and any *gated* ball circle. The clock /
+score values are stubbed at 00:00 / 0–0; `DetectionService.setScoreboardData(...)`
+is the wiring point for a future game-state source. See `model/ScoreboardData.kt`
+and `model/ScoreboardOverlay.kt`.
 
 Public Kotlin fields are in **meters** (loader converts from mm). All
 position fields (`size`, `transforms`, `goalie_box`, line endpoints) are

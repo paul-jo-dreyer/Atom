@@ -32,6 +32,22 @@ data class DetectionResult(
      *  populated on the origin tag's detection result, and only when the field
      *  overlay flag is on. */
     val goalieBoxOutline: List<Array<FloatArray>>? = null,
+    /** Projected convex-hull silhouette of the robot's 3D body (a cube centered
+     *  on the tag's XY with the tag on its top face). In image pixels, CCW or CW
+     *  order — the renderer just walks them. Populated for non-origin tags only,
+     *  and only when the field overlay flag is on; the renderer uses it as a
+     *  clip-out mask so field lines don't paint across the robot. */
+    val robotSilhouette: Array<FloatArray>? = null,
+    /** Projected closed polygon (3+ vertices) for the visible portion of the
+     *  goalie-box interior, after Sutherland-Hodgman clipping against the
+     *  field-boundary half-planes. Only populated on the origin tag's result,
+     *  only when the field overlay flag is on and FieldConfig.GOALIE_BOX_FILL
+     *  is non-None. The renderer fills it under the outline. */
+    val goalieBoxFill: Array<FloatArray>? = null,
+    /** Scoreboard projection — background plate, per-team score blocks, and
+     *  clock + score glyph segments. Only populated on the origin tag's
+     *  result, only when the field overlay flag is on. */
+    val scoreboard: com.atomtag.model.ScoreboardOverlay? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
