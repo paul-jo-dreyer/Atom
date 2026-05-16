@@ -53,14 +53,15 @@ adb shell run-as com.atomtag cat files/device_overrides.json
                        ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ DetectionService (LifecycleService, foreground, type=camera)       │
-│   • Owns: AprilTagDetector, PoseTransformer, UdpBroadcaster,       │
-│     PoseVector, CameraX (Preview + ImageAnalysis use cases),       │
+│   • Owns: AprilTagDetector, FieldOverlayProjector, BallDetector,   │
+│     PoseTransformer (static), StateTracker, UdpBroadcaster,        │
+│     CameraX (Preview + ImageAnalysis use cases),                   │
 │     toggle state (axes/labels/virtualBg), CameraStats StateFlow    │
 │   • Persistent notification with "Stop" action                     │
 │   • attachPreview/detachPreview ← surface comes from the modal     │
 │   • attachOverlay/detachOverlay ← AxisOverlayView from the modal   │
-│   • analyzeFrame: detect → transformToFieldFrame → broadcast →     │
-│     update overlay + stats                                         │
+│   • analyzeFrame: detect → project (overlay) → transformToField →  │
+│     ball detect → stateTracker.update → broadcast → push overlay   │
 └──────────────────────┬─────────────────────────────────────────────┘
                        │ provided via LocalDetectionService CompositionLocal
                        ▼
@@ -117,16 +118,27 @@ AtomTag/
 │           ├── detection/
 │           │   ├── AprilTagDetector.kt   ← ArUco detection, ROI re-detect,
 │           │   │                            IPPE_SQUARE for origin tag with
-│           │   │                            bot-Z disambiguation, EMA filter,
-│           │   │                            3D→2D axis projection
+│           │   │                            bot-Z disambiguation, origin EMA.
+│           │   │                            Returns pose + cornerBounds only —
+│           │   │                            doesn't import FieldConfig.
+│           │   ├── FieldOverlayProjector.kt ← takes detections + intrinsics,
+│           │   │                              produces an OverlayFrame: per-tag
+│           │   │                              axes, field axes, field lines,
+│           │   │                              goalie box outline + fill,
+│           │   │                              scoreboard, robot silhouettes.
+│           │   │                              Also owns the half-plane / poly-
+│           │   │                              gon clip helpers and the 7-seg
+│           │   │                              digit machinery.
 │           │   ├── BallDetector.kt       ← HSV+contour green-ball detection,
 │           │   │                            ground-plane unproject + radius gate
 │           │   ├── PoseTransformer.kt    ← cam→origin→field frame, yaw helper
 │           │   └── StateTracker.kt       ← per-tag previous pose + EMA-smoothed
 │           │                                velocity (also for ball)
 │           ├── model/
-│           │   ├── DetectionResult.kt    ← per-tag detector output
+│           │   ├── DetectionResult.kt    ← pose + cornerBounds (lean)
 │           │   ├── FieldConfig.kt        ← field-layout singleton (YAML)
+│           │   ├── OverlayFrame.kt       ← projected geometry bundle for one
+│           │   │                            frame (consumed by AxisOverlayView)
 │           │   ├── ScoreboardData.kt     ← clock + per-team scores (overlay input)
 │           │   ├── ScoreboardOverlay.kt  ← projected plate + blocks + glyphs
 │           │   ├── TagConfig.kt          ← AprilTag identity singleton (JSON)
@@ -413,6 +425,27 @@ goalie_box:
 scoreboard:
   width_mm: 120         # flat plate on the tag plane
   height_mm: 80
+turf:
+  enabled: true
+  color: "#2E7D32"
+  alpha: 180
+  mowed_stripes_n: 12          # 0 disables stripes (flat turf fill)
+  mowed_stripes_delta: 14      # ±RGB shift between adjacent stripes
+  mowed_stripes_axis: vertical # vertical | horizontal | none
+markings:
+  enabled: true
+  color: "#FFFFFF"             # also drives existing field lines + goalie outline
+  alpha: 220
+  line_width_px: 4
+  halfway_line: true
+  center_circle_radius_mm: 80  # 0 disables
+  center_dot_radius_mm: 8      # 0 disables
+logo:
+  enabled: true
+  asset: atom_electron.png     # under app/src/main/assets/
+  width_mm: 200
+  height_mm: 200
+  alpha: 220
 ball:
   radius_mm: 28
 robot:
@@ -423,19 +456,34 @@ lines:
     to_mm:   [-374,  60, 0]
 ```
 
-`AprilTagDetector` projects four flat-on-floor overlays from the origin tag's
-pose: the field lines (`fieldLines`), the goalie-box outline (`goalieBoxOutline`,
-parametric-clipped against field bounds), the goalie-box fill (`goalieBoxFill`,
-Sutherland-Hodgman polygon clip — only when `fill_color` is non-`none`), and the
-scoreboard (`ScoreboardOverlay` — plate, per-team blocks, and 7-segment glyphs
-laid out in scoreboard-local meters). `projectRobotSilhouette` projects each
-non-origin tag's body cube (8 corners → image-space convex hull).
+`FieldOverlayProjector` (not the detector) projects every flat-on-floor overlay
+from the origin tag's pose: the **turf base** rectangle and per-stripe quads,
+the **halfway line**, **center circle** + **center dot**, the **logo's
+destination quad**, the field lines (`fieldLines`), the goalie-box outline
+(`goalieBoxOutline`, parametric-clipped against field bounds), the goalie-box
+fill (`goalieBoxFill`, Sutherland-Hodgman polygon clip — only when `fill_color`
+is non-`none`), and the scoreboard (`ScoreboardOverlay` — plate, per-team
+blocks, and 7-segment glyphs in scoreboard-local meters). It also projects each
+non-origin tag's body cube into `robotSilhouettes`. The detector returns pose +
+cornerBounds only; the projector reconstitutes rvec/tvec via one Rodrigues call.
 
-`AxisOverlayView` paints all four flat overlays inside one `clipOutPath` region
-that subtracts every robot silhouette and any *gated* ball circle. The clock /
-score values are stubbed at 00:00 / 0–0; `DetectionService.setScoreboardData(...)`
-is the wiring point for a future game-state source. See `model/ScoreboardData.kt`
-and `model/ScoreboardOverlay.kt`.
+Field-bounds clipping (used by the goalie-box fill + outline polygon/segment
+clippers) is built from `FieldConfig.SIZE_X/Y_M` — four edges, oriented so the
+field origin is inside. `LINES` is purely visual now: adding a halfway line or
+sidelines to it won't accidentally bisect the goalie box.
+
+`AxisOverlayView` paints every flat overlay inside one `clipOutPath` region
+that subtracts every robot silhouette and any *gated* ball circle. Render
+order back-to-front: turf base or stripes (stripes replace base when enabled)
+→ logo (perspective warp via `Matrix.setPolyToPoly` from the bitmap's 4 corners
+to the projected ground-plane quad) → halfway line → center circle outline →
+center dot fill → goalie-box fill → field lines → goalie-box outline →
+scoreboard. The clock / score values are stubbed at 00:00 / 0–0;
+`DetectionService.setScoreboardData(...)` is the wiring point for a future
+game-state source. The logo bitmap is loaded once by `AxisOverlayView` from
+`FieldConfig.LOGO_ASSET`. See `model/ScoreboardData.kt`,
+`model/ScoreboardOverlay.kt`, and the team color knobs in `AxisOverlayView`'s
+"Team color palette" block.
 
 Public Kotlin fields are in **meters** (loader converts from mm). All
 position fields (`size`, `transforms`, `goalie_box`, line endpoints) are

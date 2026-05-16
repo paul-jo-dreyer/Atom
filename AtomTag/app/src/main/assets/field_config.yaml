@@ -57,9 +57,48 @@ robot:
   body_mm: 60
 
 # Field-line markings. Each entry is a straight segment expressed in FIELD-frame coords.
-# Add more as needed (sidelines, halfway line, etc.). Curves / arcs would need a schema
-# extension (e.g. a 'type: arc' variant) — kept flat for now.
+# Add more as needed (sidelines, etc.). Curves / arcs would need a schema extension
+# (e.g. a 'type: arc' variant) — kept flat for now. The halfway line and center
+# circle are NOT in here — they have their own dedicated knobs under `markings:`.
 lines:
   - name: goal_line
     from_mm: [-374, -60, 0]
     to_mm:   [-374,  60, 0]
+
+# Green-turf background — filled rectangle covering the field interior with an
+# optional mowed-stripe overlay (alternating-brightness bands). Colors are hex
+# "#RRGGBB"; per-section `alpha` is the 0–255 final-paint alpha.
+turf:
+  enabled: true
+  color: "#2E7D32"
+  alpha: 180
+  corner_radius_mm: 30         # rounded turf corners; 0 = sharp rectangle
+  mowed_stripes_n: 12          # 0 disables stripes
+  mowed_stripes_delta: 14      # ±RGB shift between adjacent stripes
+  mowed_stripes_axis: vertical # vertical | horizontal | none
+
+# Cosmetic interior soccer-field markings: halfway line, center circle, center
+# dot. The same color + alpha + line_width also drive the existing field lines
+# (above) and the goalie-box outline — one knob, every white marking.
+markings:
+  enabled: true
+  color: "#FFFFFF"
+  alpha: 220
+  line_width_px: 4
+  halfway_line: true
+  center_circle_radius_mm: 80   # 0 disables
+  center_dot_radius_mm: 0       # 0 disables
+
+# Logo bitmap painted as a perspective-correct quad at field center (field
+# origin). The asset must live under app/src/main/assets/.
+# `tint` optionally replaces every non-transparent pixel with a solid color
+# while preserving the bitmap's alpha mask (PorterDuff SRC_IN). Set to a hex
+# color to retint (e.g. "#FFFFFF" to render a black silhouette PNG in white);
+# omit / "none" to render the bitmap unchanged.
+logo:
+  enabled: true
+  asset: atom_electron.png
+  width_mm: 120
+  height_mm: 120
+  alpha: 220
+  tint: "#FFFFFF"

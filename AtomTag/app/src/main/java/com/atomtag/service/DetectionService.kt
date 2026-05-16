@@ -23,6 +23,7 @@ import com.atomtag.R
 import com.atomtag.data.AppMode
 import com.atomtag.detection.AprilTagDetector
 import com.atomtag.detection.BallDetector
+import com.atomtag.detection.FieldOverlayProjector
 import com.atomtag.detection.PoseTransformer
 import com.atomtag.detection.StateTracker
 import com.atomtag.model.ScoreboardData
@@ -52,6 +53,7 @@ class DetectionService : LifecycleService() {
 
     private val broadcaster = UdpBroadcaster()
     private val detector = AprilTagDetector()
+    private val projector = FieldOverlayProjector(detector.cameraMatrix(), detector.distCoeffs())
     private val ballDetector = BallDetector()
     private val stateTracker = StateTracker()
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -197,11 +199,12 @@ class DetectionService : LifecycleService() {
             val shouldDrawFieldOverlay = _showVirtualBackground.value
 
             detector.initIntrinsics(gray.cols(), gray.rows())
-            val detections = detector.detect(
-                gray,
-                projectAxes = shouldDrawAxes,
-                projectFieldOverlay = shouldDrawFieldOverlay,
+            val detections = detector.detect(gray)
+            val overlay = projector.project(
+                detections,
                 scoreboardData = scoreboardData,
+                drawTagAxes = shouldDrawAxes,
+                drawFieldOverlay = shouldDrawFieldOverlay,
             )
 
             val rawPoses = detections.map { it.pose }
@@ -283,22 +286,19 @@ class DetectionService : LifecycleService() {
                 broadcastRateHz = broadcastRate,
             )
 
-            val overlayData = detections.map { det ->
+            val overlayData = overlay.tagAxes.map { axis ->
                 AxisOverlayView.TagOverlayData(
-                    tagId = det.pose.tagId,
-                    axisPoints = if (shouldDrawAxes) det.axisPoints else null,
-                    bottomCenter = if (shouldDrawLabels) det.bottomCenter else null,
-                    silhouette = if (shouldDrawFieldOverlay) det.robotSilhouette else null,
+                    tagId = axis.tagId,
+                    axisPoints = if (shouldDrawAxes) axis.axisPoints else null,
+                    bottomCenter = if (shouldDrawLabels) axis.bottomCenter else null,
+                    silhouette = overlay.robotSilhouettes[axis.tagId],
                 )
             }
-            val fieldAxes = if (shouldDrawAxes) {
-                detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }?.fieldFrameAxes
-            } else null
-            val originDet = detections.firstOrNull { it.pose.tagId == TagConfig.ORIGIN_TAG_ID }
-            val fieldLines = if (shouldDrawFieldOverlay) originDet?.fieldLines else null
-            val goalieBoxOutline = if (shouldDrawFieldOverlay) originDet?.goalieBoxOutline else null
-            val goalieBoxFill = if (shouldDrawFieldOverlay) originDet?.goalieBoxFill else null
-            val scoreboardOverlay = if (shouldDrawFieldOverlay) originDet?.scoreboard else null
+            val fieldAxes = overlay.fieldFrameAxes
+            val fieldLines = overlay.fieldLines
+            val goalieBoxOutline = overlay.goalieBoxOutline
+            val goalieBoxFill = overlay.goalieBoxFill
+            val scoreboardOverlay = overlay.scoreboard
             val ballOverlay = ballResult?.candidates?.map {
                 AxisOverlayView.BallOverlayData(
                     pixelU = it.pixelU.toFloat(),
@@ -317,11 +317,19 @@ class DetectionService : LifecycleService() {
                         !fieldLines.isNullOrEmpty() ||
                         !goalieBoxOutline.isNullOrEmpty() ||
                         goalieBoxFill != null ||
-                        scoreboardOverlay != null
+                        scoreboardOverlay != null ||
+                        overlay.turfBase != null ||
+                        overlay.turfStripes.isNotEmpty() ||
+                        overlay.halfwayLine.isNotEmpty() ||
+                        overlay.centerCircle != null ||
+                        overlay.centerDot != null ||
+                        overlay.logoQuad != null
                     if (hasContent) {
                         ov.update(
                             overlayData, cols, rows, rotation, fieldAxes, ballOverlay,
                             fieldLines, goalieBoxOutline, goalieBoxFill, scoreboardOverlay,
+                            overlay.turfBase, overlay.turfStripes, overlay.halfwayLine,
+                            overlay.centerCircle, overlay.centerDot, overlay.logoQuad,
                         )
                     } else {
                         ov.clear()
